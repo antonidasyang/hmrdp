@@ -2,7 +2,11 @@ CompileFlags:
   Add:
     - --target=aarch64-linux-ohos
     - --sysroot=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native/sysroot
+    - -isystem/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native/llvm/include/c++/v1
+    - -isystem/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native/llvm/lib/clang/15.0.4/include
     - -I/Users/yangxc/codes/hmrdp/third_party/prebuilt/arm64-v8a/include/freerdp3
     - -I/Users/yangxc/codes/hmrdp/third_party/prebuilt/arm64-v8a/include/winpr3
     - -I/Users/yangxc/codes/hmrdp/entry/src/main/cpp
     - -std=c++17
+    - -x
+    - c++

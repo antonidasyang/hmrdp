@@ -177,6 +177,7 @@ void OnSurfaceDestroyed(OH_NativeXComponent* /*component*/, void* /*window*/)
 }
 
 hmrdp::TouchMapper g_touchMapper;
+std::atomic<bool> g_gestureActive{ false }; // ArkUI 缩放/平移手势进行中，暂停触摸转鼠标
 
 RdpSession* CurrentSession()
 {
@@ -191,6 +192,10 @@ void DispatchTouchEvent(OH_NativeXComponent* component, void* window)
     if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0)
         return;
     std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_gestureActive.load()) {
+        g_touchMapper.Reset();
+        return;
+    }
     g_touchMapper.OnTouch(event, CurrentSession());
 }
 
@@ -371,6 +376,21 @@ napi_value Disconnect(napi_env env, napi_callback_info /*info*/)
     return undefined;
 }
 
+// setGestureActive(active: boolean) — 缩放/平移期间抑制触摸转鼠标
+napi_value SetGestureActive(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool active = false;
+    if (argc >= 1)
+        napi_get_value_bool(env, args[0], &active);
+    g_gestureActive.store(active);
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // respondCert(decision: number)  0=拒绝 1=永久接受 2=仅本次
 napi_value RespondCert(napi_env env, napi_callback_info info)
 {
@@ -459,6 +479,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sendScancode", nullptr, SendScancode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "respondCert", nullptr, RespondCert, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setGestureActive", nullptr, SetGestureActive, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     RegisterXComponent(env, exports);

@@ -31,6 +31,8 @@ export const connect: (config: ConnectConfig, onState: (state: number, message: 
 export const disconnect: () => void;
 /** 应答证书确认：0=拒绝 1=永久接受 2=仅本次接受 */
 export const respondCert: (decision: number) => void;
+/** 缩放/平移手势进行中时置 true，暂停触摸转鼠标，避免手势与点击互相干扰 */
+export const setGestureActive: (active: boolean) => void;
 export const getVersion: () => string;
 /** 发送一个 UTF-16 码元（按下+抬起），用于软键盘文本输入 */
 export const sendUnicode: (utf16Unit: number) => void;

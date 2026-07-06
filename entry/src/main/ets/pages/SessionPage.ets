@@ -79,10 +79,35 @@ export struct SessionPage {
   @State connected: boolean = false;
   @State keyboardShown: boolean = false;
   @State errorText: string = '';
+  @State toolbarExpanded: boolean = true;
+  @State trackpadMode: boolean = false;
+  // 视图缩放/平移（作用于 XComponent 显示，不改变远端分辨率）
+  @State viewScale: number = 1;
+  @State offsetX: number = 0;
+  @State offsetY: number = 0;
+  private baseScale: number = 1;
+  private baseOffsetX: number = 0;
+  private baseOffsetY: number = 0;
+  private viewW: number = 0;
+  private viewH: number = 0;
   private pathStack: NavPathStack | null = null;
   private params: SessionParams = new SessionParams();
   private closing: boolean = false;
   private imeAttached: boolean = false;
+
+  private clampOffsets(): void {
+    // 缩放后允许平移的范围 = 溢出的一半
+    const maxX = Math.max(0, (this.viewW * this.viewScale - this.viewW) / 2);
+    const maxY = Math.max(0, (this.viewH * this.viewScale - this.viewH) / 2);
+    this.offsetX = Math.min(maxX, Math.max(-maxX, this.offsetX));
+    this.offsetY = Math.min(maxY, Math.max(-maxY, this.offsetY));
+  }
+
+  private resetZoom(): void {
+    this.viewScale = 1;
+    this.offsetX = 0;
+    this.offsetY = 0;
+  }
 
   private ctx(): common.Context {
     return this.getUIContext().getHostContext()!;
@@ -239,6 +264,57 @@ export struct SessionPage {
     this.pathStack?.pop();
   }
 
+  @Builder
+  toolButton(symbol: Resource, label: string, active: boolean, action: () => void) {
+    Column({ space: 2 }) {
+      SymbolGlyph(symbol)
+        .fontSize(22)
+        .fontColor([active ? '#4DA3FF' : Color.White])
+      Text(label)
+        .fontSize(10)
+        .fontColor(active ? '#4DA3FF' : Color.White)
+    }
+    .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+    .onClick(action)
+  }
+
+  @Builder
+  sessionToolbar() {
+    Row() {
+      if (this.toolbarExpanded) {
+        Row({ space: 2 }) {
+          this.toolButton($r('sys.symbol.keyboard'), '键盘', this.keyboardShown, () => {
+            if (this.keyboardShown) {
+              this.hideKeyboard();
+            } else {
+              this.showKeyboard();
+            }
+          })
+          this.toolButton($r('sys.symbol.hand_point_up_tap_fill'), this.trackpadMode ? '触控板' : '直接触摸',
+            this.trackpadMode, () => {
+              this.trackpadMode = !this.trackpadMode;
+              this.resetZoom();
+              promptAction.showToast({ message: this.trackpadMode ? '触控板模式' : '直接触摸模式' });
+            })
+          this.toolButton($r('sys.symbol.arrow_counterclockwise'), '复位', false, () => {
+            this.resetZoom();
+          })
+          this.toolButton($r('sys.symbol.xmark'), '断开', false, () => {
+            this.leave('');
+          })
+        }
+      }
+      this.toolButton(this.toolbarExpanded ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'),
+        this.toolbarExpanded ? '收起' : '菜单', false, () => {
+          this.toolbarExpanded = !this.toolbarExpanded;
+        })
+    }
+    .backgroundColor('#B3000000')
+    .borderRadius(24)
+    .padding(4)
+    .position({ right: 12, bottom: 40 })
+  }
+
   build() {
     NavDestination() {
       Stack() {
@@ -248,29 +324,56 @@ export struct SessionPage {
           .focusable(true)
           .focusOnTouch(true)
           .defaultFocus(true)
+          .scale({ x: this.viewScale, y: this.viewScale })
+          .translate({ x: this.offsetX, y: this.offsetY })
+          .onAreaChange((_o: Area, n: Area) => {
+            this.viewW = n.width as number;
+            this.viewH = n.height as number;
+          })
           .onLoad(() => {
             this.startConnect();
           })
+          .gesture(
+            GestureGroup(GestureMode.Parallel,
+              PinchGesture({ fingers: 2 })
+                .onActionStart(() => {
+                  hmrdp.setGestureActive(true);
+                  this.baseScale = this.viewScale;
+                  this.baseOffsetX = this.offsetX;
+                  this.baseOffsetY = this.offsetY;
+                })
+                .onActionUpdate((event: GestureEvent) => {
+                  this.viewScale = Math.min(4, Math.max(1, this.baseScale * event.scale));
+                  this.clampOffsets();
+                })
+                .onActionEnd(() => {
+                  if (this.viewScale <= 1.01) {
+                    this.resetZoom();
+                  }
+                  hmrdp.setGestureActive(false);
+                }),
+              // 双指拖动平移（缩放后才生效）
+              PanGesture({ fingers: 2 })
+                .onActionStart(() => {
+                  hmrdp.setGestureActive(true);
+                  this.baseOffsetX = this.offsetX;
+                  this.baseOffsetY = this.offsetY;
+                })
+                .onActionUpdate((event: GestureEvent) => {
+                  if (this.viewScale > 1) {
+                    this.offsetX = this.baseOffsetX + (event.offsetX as number);
+                    this.offsetY = this.baseOffsetY + (event.offsetY as number);
+                    this.clampOffsets();
+                  }
+                })
+                .onActionEnd(() => {
+                  hmrdp.setGestureActive(false);
+                })
+            )
+          )
 
         if (this.connected) {
-          // 临时悬浮键盘开关（M3c 换成完整工具栏）
-          Button() {
-            Text(this.keyboardShown ? '⌨×' : '⌨')
-              .fontSize(20)
-              .fontColor(Color.White)
-          }
-          .type(ButtonType.Circle)
-          .width(44)
-          .height(44)
-          .backgroundColor('#66000000')
-          .position({ right: 16, bottom: 96 })
-          .onClick(() => {
-            if (this.keyboardShown) {
-              this.hideKeyboard();
-            } else {
-              this.showKeyboard();
-            }
-          })
+          this.sessionToolbar()
         }
 
         if (!this.connected) {
