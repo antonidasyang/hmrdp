@@ -13,6 +13,8 @@ interface HmConnectConfig {
   username: string;
   password: string;
   domain: string;
+  width: number;
+  height: number;
   scale: number;
 }
 
@@ -82,11 +84,13 @@ export struct SessionPage {
   }
 
   private startConnect(): void {
-    let scale = 100;
-    try {
-      scale = Math.round(display.getDefaultDisplaySync().densityPixels * 100);
-    } catch (e) {
-      scale = 100;
+    let scale = this.params.scale;
+    if (scale === 0) {
+      try {
+        scale = Math.round(display.getDefaultDisplaySync().densityPixels * 100);
+      } catch (e) {
+        scale = 100;
+      }
     }
     scale = Math.min(500, Math.max(100, scale));
 
@@ -96,6 +100,8 @@ export struct SessionPage {
       username: this.params.username,
       password: this.params.password,
       domain: this.params.domain,
+      width: this.params.width,
+      height: this.params.height,
       scale: scale
     };
     const ok: boolean = hmrdp.connect(config, (state: number, message: string) => {

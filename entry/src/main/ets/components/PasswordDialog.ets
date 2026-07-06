@@ -1,0 +1,46 @@
+// 「每次询问」模式的凭据输入对话框
+@CustomDialog
+export struct PasswordDialog {
+  controller: CustomDialogController;
+  pcName: string = '';
+  @State username: string = '';
+  @State password: string = '';
+  onConfirm: (username: string, password: string) => void = () => {
+  };
+
+  build() {
+    Column({ space: 16 }) {
+      Text(`连接到 ${this.pcName}`)
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .alignSelf(ItemAlign.Start)
+      TextInput({ placeholder: '用户名', text: this.username })
+        .type(InputType.USER_NAME)
+        .onChange((v: string) => {
+          this.username = v;
+        })
+      TextInput({ placeholder: '密码', text: this.password })
+        .type(InputType.Password)
+        .onChange((v: string) => {
+          this.password = v;
+        })
+      Row({ space: 12 }) {
+        Button('取消')
+          .buttonStyle(ButtonStyleMode.NORMAL)
+          .layoutWeight(1)
+          .onClick(() => {
+            this.controller.close();
+          })
+        Button('连接')
+          .layoutWeight(1)
+          .enabled(this.username.trim().length > 0)
+          .onClick(() => {
+            this.controller.close();
+            this.onConfirm(this.username.trim(), this.password);
+          })
+      }
+      .width('100%')
+    }
+    .padding(24)
+  }
+}

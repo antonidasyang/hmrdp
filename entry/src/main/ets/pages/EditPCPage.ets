@@ -1,16 +1,74 @@
-import { SessionParams } from '../model/SessionParams';
+import { promptAction } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
+import { PCEntry } from '../model/PCEntry';
+import { PCStore } from '../model/PCStore';
+
+export class EditPCParams {
+  /** 空串 = 新建 */
+  id: string = '';
+
+  constructor(id: string) {
+    this.id = id;
+  }
+}
+
+interface ResolutionOption {
+  label: string;
+  width: number;
+  height: number;
+}
+
+const RESOLUTIONS: ResolutionOption[] = [
+  { label: '跟随屏幕', width: 0, height: 0 },
+  { label: '1280 × 720', width: 1280, height: 720 },
+  { label: '1920 × 1080', width: 1920, height: 1080 },
+  { label: '2560 × 1440', width: 2560, height: 1440 },
+];
+
+interface ScaleOption {
+  label: string;
+  value: number;
+}
+
+const SCALES: ScaleOption[] = [
+  { label: '跟随设备', value: 0 },
+  { label: '100%', value: 100 },
+  { label: '150%', value: 150 },
+  { label: '200%', value: 200 },
+  { label: '300%', value: 300 },
+];
 
 @Component
 export struct EditPCPage {
   @State hostname: string = '';
+  @State friendlyName: string = '';
   @State username: string = '';
   @State password: string = '';
+  @State hasSavedPassword: boolean = false;
+  @State resolutionIndex: number = 0;
+  @State scaleIndex: number = 0;
+  @State editingId: string = '';
   private pathStack: NavPathStack | null = null;
 
-  private connectNow(): void {
-    if (this.hostname.trim().length === 0) {
+  private ctx(): common.Context {
+    return this.getUIContext().getHostContext()!;
+  }
+
+  private loadForEdit(id: string): void {
+    const pc = PCStore.load(this.ctx()).find((it) => it.id === id);
+    if (!pc) {
       return;
     }
+    this.editingId = pc.id;
+    this.friendlyName = pc.name;
+    this.hostname = pc.port === 3389 ? pc.host : `${pc.host}:${pc.port}`;
+    this.username = pc.username;
+    this.hasSavedPassword = pc.hasPassword;
+    this.resolutionIndex = Math.max(0, RESOLUTIONS.findIndex((r) => r.width === pc.width && r.height === pc.height));
+    this.scaleIndex = Math.max(0, SCALES.findIndex((s) => s.value === pc.scale));
+  }
+
+  private parseHost(): string[] | null {
     let host = this.hostname.trim();
     let port = 3389;
     const idx = host.lastIndexOf(':');
@@ -21,45 +79,175 @@ export struct EditPCPage {
         host = host.substring(0, idx);
       }
     }
-    // M3a：这里改为保存电脑配置；当前先直连验证链路
-    const params = new SessionParams(host, port, this.username.trim(), this.password);
-    this.pathStack?.pushPathByName('session', params);
+    if (host.length === 0) {
+      return null;
+    }
+    return [host, `${port}`];
+  }
+
+  private async save(): Promise<void> {
+    const parsed = this.parseHost();
+    if (parsed === null) {
+      promptAction.showToast({ message: '请输入电脑名或 IP 地址' });
+      return;
+    }
+    const id = this.editingId.length > 0 ? this.editingId : PCStore.newId();
+    const old = PCStore.load(this.ctx()).find((it) => it.id === id);
+
+    let hasPassword = this.hasSavedPassword;
+    if (this.password.length > 0) {
+      await PCStore.savePassword(id, this.password);
+      hasPassword = true;
+    }
+
+    const entry: PCEntry = {
+      id: id,
+      name: this.friendlyName.trim(),
+      host: parsed[0],
+      port: Number.parseInt(parsed[1]),
+      username: this.username.trim(),
+      hasPassword: hasPassword,
+      width: RESOLUTIONS[this.resolutionIndex].width,
+      height: RESOLUTIONS[this.resolutionIndex].height,
+      scale: SCALES[this.scaleIndex].value,
+      createdAt: old?.createdAt ?? Date.now(),
+      lastUsedAt: old?.lastUsedAt ?? 0
+    };
+    PCStore.upsert(this.ctx(), entry);
+    AppStorage.setOrCreate('pcsVersion', Date.now());
+    this.pathStack?.pop();
+  }
+
+  private async clearPassword(): Promise<void> {
+    if (this.editingId.length > 0) {
+      await PCStore.removePassword(this.editingId);
+      const pc = PCStore.load(this.ctx()).find((it) => it.id === this.editingId);
+      if (pc) {
+        pc.hasPassword = false;
+        PCStore.upsert(this.ctx(), pc);
+      }
+    }
+    this.hasSavedPassword = false;
+    this.password = '';
+    promptAction.showToast({ message: '已清除保存的密码' });
+  }
+
+  private removeAndBack(): void {
+    if (this.editingId.length > 0) {
+      PCStore.remove(this.ctx(), this.editingId);
+      PCStore.removePassword(this.editingId);
+      AppStorage.setOrCreate('pcsVersion', Date.now());
+    }
+    this.pathStack?.pop();
+  }
+
+  @Builder
+  sectionTitle(text: string) {
+    Text(text)
+      .fontSize(13)
+      .fontColor($r('sys.color.font_secondary'))
+      .alignSelf(ItemAlign.Start)
+      .margin({ top: 8 })
   }
 
   build() {
     NavDestination() {
-      Column({ space: 16 }) {
-        TextInput({ placeholder: '电脑名或 IP 地址（如 192.168.1.10:3389）', text: this.hostname })
-          .type(InputType.Normal)
-          .onChange((v: string) => {
-            this.hostname = v;
+      Scroll() {
+        Column({ space: 12 }) {
+          this.sectionTitle('电脑')
+          TextInput({ placeholder: '电脑名或 IP 地址（如 192.168.1.10:3389）', text: this.hostname })
+            .onChange((v: string) => {
+              this.hostname = v;
+            })
+          TextInput({ placeholder: '友好名称（可选）', text: this.friendlyName })
+            .onChange((v: string) => {
+              this.friendlyName = v;
+            })
+
+          this.sectionTitle('用户账户（留空则连接时询问）')
+          TextInput({ placeholder: '用户名（如 Administrator 或 user@domain）', text: this.username })
+            .type(InputType.USER_NAME)
+            .onChange((v: string) => {
+              this.username = v;
+            })
+          TextInput({
+            placeholder: this.hasSavedPassword ? '密码已保存（留空保持不变）' : '密码（可选，保存在系统加密存储）',
+            text: this.password
           })
-        TextInput({ placeholder: '用户名（如 Administrator 或 user@domain）', text: this.username })
-          .type(InputType.USER_NAME)
-          .onChange((v: string) => {
-            this.username = v;
-          })
-        TextInput({ placeholder: '密码', text: this.password })
-          .type(InputType.Password)
-          .onChange((v: string) => {
-            this.password = v;
-          })
-        Button('连接')
+            .type(InputType.Password)
+            .onChange((v: string) => {
+              this.password = v;
+            })
+          if (this.hasSavedPassword) {
+            Button('清除已保存的密码')
+              .buttonStyle(ButtonStyleMode.TEXTUAL)
+              .fontColor($r('sys.color.warning'))
+              .onClick(() => {
+                this.clearPassword();
+              })
+          }
+
+          this.sectionTitle('显示')
+          Row() {
+            Text('分辨率')
+              .fontSize(15)
+            Blank()
+            Select(RESOLUTIONS.map((r): SelectOption => ({ value: r.label })))
+              .selected(this.resolutionIndex)
+              .value(RESOLUTIONS[this.resolutionIndex].label)
+              .onSelect((index: number) => {
+                this.resolutionIndex = index;
+              })
+          }
           .width('100%')
-          .margin({ top: 16 })
-          .enabled(this.hostname.trim().length > 0)
-          .onClick(() => {
-            this.connectNow();
-          })
-        Blank()
+
+          Row() {
+            Text('显示缩放')
+              .fontSize(15)
+            Blank()
+            Select(SCALES.map((s): SelectOption => ({ value: s.label })))
+              .selected(this.scaleIndex)
+              .value(SCALES[this.scaleIndex].label)
+              .onSelect((index: number) => {
+                this.scaleIndex = index;
+              })
+          }
+          .width('100%')
+
+          Button('保存')
+            .width('100%')
+            .margin({ top: 20 })
+            .enabled(this.hostname.trim().length > 0)
+            .onClick(() => {
+              this.save();
+            })
+
+          if (this.editingId.length > 0) {
+            Button('删除这台电脑')
+              .width('100%')
+              .buttonStyle(ButtonStyleMode.NORMAL)
+              .fontColor($r('sys.color.warning'))
+              .onClick(() => {
+                this.removeAndBack();
+              })
+          }
+        }
+        .padding(16)
+        .width('100%')
       }
-      .padding(16)
       .width('100%')
       .height('100%')
+      .align(Alignment.Top)
     }
-    .title('添加电脑')
+    .title(this.editingId.length > 0 ? '编辑电脑' : '添加电脑')
     .onReady((ctx: NavDestinationContext) => {
       this.pathStack = ctx.pathStack;
+      if (ctx.pathInfo.param instanceof EditPCParams) {
+        const params = ctx.pathInfo.param as EditPCParams;
+        if (params.id.length > 0) {
+          this.loadForEdit(params.id);
+        }
+      }
     })
   }
 }
