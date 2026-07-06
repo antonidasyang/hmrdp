@@ -1,6 +1,10 @@
 import { display, promptAction } from '@kit.ArkUI';
+import { inputMethod } from '@kit.IMEKit';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
+
+const SC_BACKSPACE = 0x0E;
+const SC_ENTER = 0x1C;
 
 // libhmrdp.so 的 ConnectConfig 本地镜像（.so 具名类型导入在部分 SDK 版本不稳定）
 interface HmConnectConfig {
@@ -20,9 +24,62 @@ const STATE_DISCONNECTED = 2;
 export struct SessionPage {
   @State statusText: string = '正在连接…';
   @State connected: boolean = false;
+  @State keyboardShown: boolean = false;
   private pathStack: NavPathStack | null = null;
   private params: SessionParams = new SessionParams();
   private closing: boolean = false;
+  private imeAttached: boolean = false;
+
+  private async showKeyboard(): Promise<void> {
+    const controller = inputMethod.getController();
+    if (!this.imeAttached) {
+      await controller.attach(true, {
+        inputAttribute: {
+          textInputType: inputMethod.TextInputType.TEXT,
+          enterKeyType: inputMethod.EnterKeyType.UNSPECIFIED
+        }
+      });
+      controller.on('insertText', (text: string) => {
+        for (let i = 0; i < text.length; i++) {
+          hmrdp.sendUnicode(text.charCodeAt(i));
+        }
+      });
+      controller.on('deleteLeft', (length: number) => {
+        for (let i = 0; i < length; i++) {
+          hmrdp.sendScancode(SC_BACKSPACE, false, true);
+          hmrdp.sendScancode(SC_BACKSPACE, false, false);
+        }
+      });
+      controller.on('sendFunctionKey', (functionKey: inputMethod.FunctionKey) => {
+        hmrdp.sendScancode(SC_ENTER, false, true);
+        hmrdp.sendScancode(SC_ENTER, false, false);
+      });
+      this.imeAttached = true;
+    } else {
+      await controller.showTextInput();
+    }
+    this.keyboardShown = true;
+  }
+
+  private async hideKeyboard(): Promise<void> {
+    const controller = inputMethod.getController();
+    if (this.imeAttached) {
+      await controller.hideTextInput();
+    }
+    this.keyboardShown = false;
+  }
+
+  private releaseKeyboard(): void {
+    if (this.imeAttached) {
+      const controller = inputMethod.getController();
+      controller.off('insertText');
+      controller.off('deleteLeft');
+      controller.off('sendFunctionKey');
+      controller.detach((err) => {
+      });
+      this.imeAttached = false;
+    }
+  }
 
   private startConnect(): void {
     let scale = 100;
@@ -80,9 +137,33 @@ export struct SessionPage {
         XComponent({ id: 'rdp_surface', type: XComponentType.SURFACE, libraryname: 'hmrdp' })
           .width('100%')
           .height('100%')
+          .focusable(true)
+          .focusOnTouch(true)
+          .defaultFocus(true)
           .onLoad(() => {
             this.startConnect();
           })
+
+        if (this.connected) {
+          // 临时悬浮键盘开关（M3c 换成完整工具栏）
+          Button() {
+            Text(this.keyboardShown ? '⌨×' : '⌨')
+              .fontSize(20)
+              .fontColor(Color.White)
+          }
+          .type(ButtonType.Circle)
+          .width(44)
+          .height(44)
+          .backgroundColor('#66000000')
+          .position({ right: 16, bottom: 96 })
+          .onClick(() => {
+            if (this.keyboardShown) {
+              this.hideKeyboard();
+            } else {
+              this.showKeyboard();
+            }
+          })
+        }
 
         if (!this.connected) {
           Column({ space: 12 }) {
@@ -112,6 +193,7 @@ export struct SessionPage {
       }
     })
     .onDisAppear(() => {
+      this.releaseKeyboard();
       hmrdp.disconnect();
     })
   }

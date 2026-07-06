@@ -7,11 +7,14 @@
 #include <cstring>
 
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <freerdp/error.h>
 #include <winpr/synch.h>
 #include <winpr/wlog.h>
 #include <native_buffer/native_buffer.h>
+
+#include <algorithm>
 
 #include "hm_log.h"
 
@@ -152,6 +155,10 @@ RdpSession::~RdpSession()
         CloseHandle(stopEvent_);
         stopEvent_ = nullptr;
     }
+    if (inputSignal_) {
+        CloseHandle(inputSignal_);
+        inputSignal_ = nullptr;
+    }
 }
 
 bool RdpSession::ApplySettings()
@@ -229,7 +236,8 @@ bool RdpSession::Start()
     }
 
     stopEvent_ = CreateEventA(nullptr, TRUE, FALSE, nullptr);
-    if (!stopEvent_)
+    inputSignal_ = CreateEventA(nullptr, FALSE, FALSE, nullptr); // 自动复位
+    if (!stopEvent_ || !inputSignal_)
         return false;
 
     running_.store(true);
@@ -264,18 +272,20 @@ void RdpSession::ThreadMain()
 
     while (!freerdp_shall_disconnect_context(context_)) {
         HANDLE handles[MAXIMUM_WAIT_OBJECTS] = {};
-        DWORD count = freerdp_get_event_handles(context_, handles, MAXIMUM_WAIT_OBJECTS - 1);
+        DWORD count = freerdp_get_event_handles(context_, handles, MAXIMUM_WAIT_OBJECTS - 2);
         if (count == 0) {
             HMLOGE("freerdp_get_event_handles 失败");
             break;
         }
         handles[count++] = stopEvent_;
+        handles[count++] = inputSignal_;
 
         const DWORD status = WaitForMultipleObjects(count, handles, FALSE, INFINITE);
         if (status == WAIT_FAILED)
             break;
         if (WaitForSingleObject(stopEvent_, 0) == WAIT_OBJECT_0)
             break;
+        DrainInput();
         if (!freerdp_check_event_handles(context_)) {
             if (freerdp_get_last_error(context_) == FREERDP_ERROR_SUCCESS)
                 HMLOGW("会话事件处理失败，断开");
@@ -312,10 +322,129 @@ void RdpSession::DetachWindow()
     window_ = nullptr;
 }
 
-void RdpSession::OnDesktopResize(uint32_t /*w*/, uint32_t /*h*/)
+void RdpSession::OnDesktopResize(uint32_t w, uint32_t h)
 {
+    desktopWidth_.store(w);
+    desktopHeight_.store(h);
     std::lock_guard<std::mutex> lock(windowMutex_);
     geometryDirty_ = true;
+}
+
+// ---- 输入注入 ----
+
+void RdpSession::PushInput(const InputEvent& event)
+{
+    if (!running_.load())
+        return;
+    {
+        std::lock_guard<std::mutex> lock(inputMutex_);
+        if (inputQueue_.size() > 512) // 背压：丢弃最旧的移动事件
+            inputQueue_.pop_front();
+        inputQueue_.push_back(event);
+    }
+    if (inputSignal_)
+        SetEvent(inputSignal_);
+}
+
+void RdpSession::DrainInput()
+{
+    rdpInput* input = context_ ? context_->input : nullptr;
+    if (!input)
+        return;
+    for (;;) {
+        InputEvent event;
+        {
+            std::lock_guard<std::mutex> lock(inputMutex_);
+            if (inputQueue_.empty())
+                return;
+            event = inputQueue_.front();
+            inputQueue_.pop_front();
+        }
+        switch (event.kind) {
+            case InputEvent::Kind::Mouse:
+                freerdp_input_send_mouse_event(input, event.flags, event.x, event.y);
+                break;
+            case InputEvent::Kind::Scancode: {
+                UINT16 flags = event.down ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE;
+                if (event.extended)
+                    flags |= KBD_FLAGS_EXTENDED;
+                freerdp_input_send_keyboard_event(input, flags, static_cast<UINT8>(event.code));
+                break;
+            }
+            case InputEvent::Kind::Unicode:
+                freerdp_input_send_unicode_keyboard_event(input, 0, event.code);
+                freerdp_input_send_unicode_keyboard_event(input, KBD_FLAGS_RELEASE, event.code);
+                break;
+        }
+    }
+}
+
+bool RdpSession::MapToDesktop(float sx, float sy, uint16_t& dx, uint16_t& dy)
+{
+    const uint32_t dw = desktopWidth_.load();
+    const uint32_t dh = desktopHeight_.load();
+    uint64_t sw = 0;
+    uint64_t sh = 0;
+    {
+        std::lock_guard<std::mutex> lock(windowMutex_);
+        sw = surfaceWidth_;
+        sh = surfaceHeight_;
+    }
+    if (dw == 0 || dh == 0 || sw == 0 || sh == 0)
+        return false;
+    float fx = sx * static_cast<float>(dw) / static_cast<float>(sw);
+    float fy = sy * static_cast<float>(dh) / static_cast<float>(sh);
+    fx = std::max(0.0f, std::min(fx, static_cast<float>(dw - 1)));
+    fy = std::max(0.0f, std::min(fy, static_cast<float>(dh - 1)));
+    dx = static_cast<uint16_t>(fx);
+    dy = static_cast<uint16_t>(fy);
+    return true;
+}
+
+void RdpSession::SendPointer(uint16_t flags, float surfaceX, float surfaceY)
+{
+    InputEvent event = {};
+    event.kind = InputEvent::Kind::Mouse;
+    event.flags = flags;
+    if (!MapToDesktop(surfaceX, surfaceY, event.x, event.y))
+        return;
+    PushInput(event);
+}
+
+void RdpSession::SendWheel(int32_t delta, float surfaceX, float surfaceY)
+{
+    InputEvent event = {};
+    event.kind = InputEvent::Kind::Mouse;
+    MapToDesktop(surfaceX, surfaceY, event.x, event.y);
+
+    int32_t remaining = delta;
+    while (remaining != 0) {
+        const int32_t step = std::max(-255, std::min(255, remaining));
+        remaining -= step;
+        // 滚动量为 9 位二补码（负值自带 PTR_FLAGS_WHEEL_NEGATIVE 位）
+        const uint16_t magnitude =
+            static_cast<uint16_t>((step >= 0 ? step : 0x200 + step) & WheelRotationMask);
+        event.flags = PTR_FLAGS_WHEEL | magnitude;
+        PushInput(event);
+    }
+}
+
+void RdpSession::SendScancode(uint16_t scancode, bool extended, bool down)
+{
+    InputEvent event = {};
+    event.kind = InputEvent::Kind::Scancode;
+    event.code = scancode;
+    event.extended = extended;
+    event.down = down;
+    PushInput(event);
+}
+
+void RdpSession::SendUnicode(uint16_t utf16Unit)
+{
+    InputEvent event = {};
+    event.kind = InputEvent::Kind::Unicode;
+    event.code = utf16Unit;
+    PushInput(event);
 }
 
 void RdpSession::OnGraphicsDirty()

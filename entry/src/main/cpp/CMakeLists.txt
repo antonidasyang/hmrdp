@@ -18,6 +18,7 @@ include_directories(
 add_library(hmrdp SHARED
     napi_init.cpp
     rdp_session.cpp
+    input_mapper.cpp
 )
 
 target_link_libraries(hmrdp PUBLIC

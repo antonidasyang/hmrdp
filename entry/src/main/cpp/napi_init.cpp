@@ -11,6 +11,7 @@
 #include <freerdp/version.h>
 
 #include "hm_log.h"
+#include "input_mapper.h"
 #include "rdp_session.h"
 
 using hmrdp::RdpSession;
@@ -105,9 +106,57 @@ void OnSurfaceDestroyed(OH_NativeXComponent* /*component*/, void* /*window*/)
         g_session->DetachWindow();
 }
 
-void DispatchTouchEvent(OH_NativeXComponent* /*component*/, void* /*window*/)
+hmrdp::TouchMapper g_touchMapper;
+
+RdpSession* CurrentSession()
 {
-    // M2c: 触摸 -> RDP 鼠标事件
+    // 注意：调用方不持有生命周期；会话销毁只发生在 UI 线程 connect()，
+    // 与本文件所有使用点同线程，因此裸指针安全。
+    return g_session.get();
+}
+
+void DispatchTouchEvent(OH_NativeXComponent* component, void* window)
+{
+    OH_NativeXComponent_TouchEvent event;
+    if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0)
+        return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_touchMapper.OnTouch(event, CurrentSession());
+}
+
+void DispatchMouseEvent(OH_NativeXComponent* component, void* window)
+{
+    OH_NativeXComponent_MouseEvent event;
+    if (OH_NativeXComponent_GetMouseEvent(component, window, &event) != 0)
+        return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    hmrdp::HandleMouse(event, CurrentSession());
+}
+
+void DispatchHoverEvent(OH_NativeXComponent* /*component*/, bool /*isHover*/) {}
+
+void DispatchKeyEvent(OH_NativeXComponent* component, void* /*window*/)
+{
+    OH_NativeXComponent_KeyEvent* event = nullptr;
+    if (OH_NativeXComponent_GetKeyEvent(component, &event) != 0 || !event)
+        return;
+    OH_NativeXComponent_KeyAction action;
+    OH_NativeXComponent_KeyCode code;
+    if (OH_NativeXComponent_GetKeyEventAction(event, &action) != 0 ||
+        OH_NativeXComponent_GetKeyEventCode(event, &code) != 0)
+        return;
+    if (action != OH_NATIVEXCOMPONENT_KEY_ACTION_DOWN && action != OH_NATIVEXCOMPONENT_KEY_ACTION_UP)
+        return;
+
+    uint16_t scancode = 0;
+    bool extended = false;
+    if (!hmrdp::OhosKeyToRdpScancode(static_cast<uint32_t>(code), scancode, extended))
+        return;
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    RdpSession* session = CurrentSession();
+    if (session)
+        session->SendScancode(scancode, extended, action == OH_NATIVEXCOMPONENT_KEY_ACTION_DOWN);
 }
 
 OH_NativeXComponent_Callback g_xcomponentCallbacks = {
@@ -115,6 +164,11 @@ OH_NativeXComponent_Callback g_xcomponentCallbacks = {
     OnSurfaceChanged,
     OnSurfaceDestroyed,
     DispatchTouchEvent,
+};
+
+OH_NativeXComponent_MouseEvent_Callback g_mouseCallbacks = {
+    DispatchMouseEvent,
+    DispatchHoverEvent,
 };
 
 // ---- NAPI 工具 ----
@@ -232,6 +286,51 @@ napi_value Disconnect(napi_env env, napi_callback_info /*info*/)
     return undefined;
 }
 
+// sendUnicode(utf16Unit: number)
+napi_value SendUnicode(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t code = 0;
+    if (argc >= 1)
+        napi_get_value_uint32(env, args[0], &code);
+
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_session)
+            g_session->SendUnicode(static_cast<uint16_t>(code));
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// sendScancode(scancode: number, extended: boolean, down: boolean)
+napi_value SendScancode(napi_env env, napi_callback_info info)
+{
+    size_t argc = 3;
+    napi_value args[3] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t code = 0;
+    bool extended = false;
+    bool down = false;
+    if (argc >= 3) {
+        napi_get_value_uint32(env, args[0], &code);
+        napi_get_value_bool(env, args[1], &extended);
+        napi_get_value_bool(env, args[2], &down);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_session)
+            g_session->SendScancode(static_cast<uint16_t>(code), extended, down);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 void RegisterXComponent(napi_env env, napi_value exports)
 {
     napi_value exportInstance = nullptr;
@@ -241,6 +340,8 @@ void RegisterXComponent(napi_env env, napi_value exports)
     if (napi_unwrap(env, exportInstance, reinterpret_cast<void**>(&xcomponent)) != napi_ok || !xcomponent)
         return;
     OH_NativeXComponent_RegisterCallback(xcomponent, &g_xcomponentCallbacks);
+    OH_NativeXComponent_RegisterMouseEventCallback(xcomponent, &g_mouseCallbacks);
+    OH_NativeXComponent_RegisterKeyEventCallback(xcomponent, DispatchKeyEvent);
     HMLOGI("XComponent 回调注册完成");
 }
 
@@ -250,6 +351,8 @@ napi_value Init(napi_env env, napi_value exports)
         { "getVersion", nullptr, GetVersion, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "connect", nullptr, Connect, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "disconnect", nullptr, Disconnect, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "sendScancode", nullptr, SendScancode, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     RegisterXComponent(env, exports);
