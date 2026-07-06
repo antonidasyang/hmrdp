@@ -219,6 +219,7 @@ export struct SessionPage {
     };
     this.errorText = '';
     this.statusText = '正在连接…';
+    hmrdp.setTouchMode(this.trackpadMode); // 同步全局触摸映射器状态
     const ok: boolean = hmrdp.connect(config, (state: number, message: string) => {
       this.onSessionState(state, message);
     }, (request: HmCertRequest) => {
@@ -293,6 +294,7 @@ export struct SessionPage {
           this.toolButton($r('sys.symbol.hand_point_up_tap_fill'), this.trackpadMode ? '触控板' : '直接触摸',
             this.trackpadMode, () => {
               this.trackpadMode = !this.trackpadMode;
+              hmrdp.setTouchMode(this.trackpadMode);
               this.resetZoom();
               promptAction.showToast({ message: this.trackpadMode ? '触控板模式' : '直接触摸模式' });
             })

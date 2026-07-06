@@ -73,13 +73,22 @@ public:
     // ---- 输入注入（任意线程调用，经队列转发到 RDP 线程）----
     // surface 像素坐标（内部换算为远端桌面坐标）
     void SendPointer(uint16_t flags, float surfaceX, float surfaceY);
+    // 直接以远端桌面坐标发送（触控板虚拟指针用）
+    void SendPointerDesktop(uint16_t flags, uint16_t desktopX, uint16_t desktopY);
     // delta: 正值向上滚动，单位为标准滚轮档（120/档）
     void SendWheel(int32_t delta, float surfaceX, float surfaceY);
     void SendScancode(uint16_t scancode, bool extended, bool down);
     void SendUnicode(uint16_t utf16Unit); // 自动发送按下+抬起
 
-    // ---- 以下供 freerdp C 回调使用 ----
-    void OnGraphicsDirty();                 // EndPaint：把 GDI 帧刷到 NativeWindow
+    void GetDesktopSize(uint32_t& w, uint32_t& h) const
+    {
+        w = desktopWidth_.load();
+        h = desktopHeight_.load();
+    }
+
+    // ---- 以下供 freerdp C 回调使用（均在 RDP 线程）----
+    void MarkDirty(int32_t x, int32_t y, int32_t w, int32_t h); // EndPaint 累积脏区
+    void PresentIfDirty();                                       // 每轮事件后合并提交一次
     void OnDesktopResize(uint32_t w, uint32_t h);
     void NotifyState(SessionState state, const char* message);
     // RDP 线程调用：通知 UI 并阻塞等待决策（0 拒绝 / 1 永久接受 / 2 本次接受）
@@ -127,6 +136,13 @@ private:
 
     std::atomic<uint32_t> desktopWidth_{ 0 };
     std::atomic<uint32_t> desktopHeight_{ 0 };
+
+    // 脏区累积（仅 RDP 线程访问）
+    bool presentPending_ = false;
+    int32_t dirtyX0_ = 0;
+    int32_t dirtyY0_ = 0;
+    int32_t dirtyX1_ = 0;
+    int32_t dirtyY1_ = 0;
 
     std::mutex inputMutex_;
     std::deque<InputEvent> inputQueue_;

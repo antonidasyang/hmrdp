@@ -47,7 +47,9 @@ BOOL HmEndPaint(rdpContext* context)
     HGDI_WND hwnd = context->gdi->primary->hdc->hwnd;
     if (hwnd->invalid->null)
         return TRUE;
-    SessionOf(context)->OnGraphicsDirty();
+    const HGDI_RGN rgn = hwnd->invalid;
+    // 累积脏区包围盒，不在此立即提交；由事件循环每轮合并 present 一次
+    SessionOf(context)->MarkDirty(rgn->x, rgn->y, rgn->w, rgn->h);
     return TRUE;
 }
 
@@ -358,6 +360,8 @@ void RdpSession::ThreadMain()
                 HMLOGW("会话事件处理失败，断开");
             break;
         }
+        // 本轮所有更新处理完后合并提交一帧（避免逐 EndPaint 重复 present）
+        PresentIfDirty();
     }
 
     const UINT32 err = freerdp_get_last_error(context_);
@@ -478,6 +482,16 @@ void RdpSession::SendPointer(uint16_t flags, float surfaceX, float surfaceY)
     PushInput(event);
 }
 
+void RdpSession::SendPointerDesktop(uint16_t flags, uint16_t desktopX, uint16_t desktopY)
+{
+    InputEvent event = {};
+    event.kind = InputEvent::Kind::Mouse;
+    event.flags = flags;
+    event.x = desktopX;
+    event.y = desktopY;
+    PushInput(event);
+}
+
 void RdpSession::SendWheel(int32_t delta, float surfaceX, float surfaceY)
 {
     InputEvent event = {};
@@ -514,9 +528,32 @@ void RdpSession::SendUnicode(uint16_t utf16Unit)
     PushInput(event);
 }
 
-void RdpSession::OnGraphicsDirty()
+void RdpSession::MarkDirty(int32_t x, int32_t y, int32_t w, int32_t h)
 {
+    if (w <= 0 || h <= 0)
+        return;
+    const int32_t x1 = x + w;
+    const int32_t y1 = y + h;
+    if (!presentPending_) {
+        dirtyX0_ = x;
+        dirtyY0_ = y;
+        dirtyX1_ = x1;
+        dirtyY1_ = y1;
+        presentPending_ = true;
+    } else {
+        dirtyX0_ = std::min(dirtyX0_, x);
+        dirtyY0_ = std::min(dirtyY0_, y);
+        dirtyX1_ = std::max(dirtyX1_, x1);
+        dirtyY1_ = std::max(dirtyY1_, y1);
+    }
+}
+
+void RdpSession::PresentIfDirty()
+{
+    if (!presentPending_)
+        return;
     PresentFrame();
+    presentPending_ = false;
 }
 
 bool RdpSession::PresentFrame()
@@ -564,7 +601,8 @@ bool RdpSession::PresentFrame()
         return false;
     }
 
-    // NativeWindow 多缓冲轮转，无法保证残留内容，整帧拷贝保证正确性（M4b 做脏区优化）
+    // NativeWindow 多缓冲轮转，缓冲内容不保证，整帧拷贝保证正确性；
+    // 脏区仅用于 FlushBuffer 的 damage 提示（减少合成器/显示带宽）
     const uint8_t* src = gdi->primary_buffer;
     uint8_t* dst = static_cast<uint8_t*>(mapped);
     const uint32_t srcStride = gdi->stride;
@@ -581,9 +619,25 @@ bool RdpSession::PresentFrame()
 
     munmap(mapped, handle->size);
 
+    // damage 区域：脏区包围盒与桌面尺寸求交
+    const int32_t dx = std::max(0, dirtyX0_);
+    const int32_t dy = std::max(0, dirtyY0_);
+    const int32_t dw = std::min(width, dirtyX1_) - dx;
+    const int32_t dh = std::min(height, dirtyY1_) - dy;
+
     Region region = {};
-    region.rects = nullptr;    // 全帧
-    region.rectNumber = 0;
+    Region::Rect rect;
+    if (dw > 0 && dh > 0) {
+        rect.x = dx;
+        rect.y = dy;
+        rect.w = static_cast<uint32_t>(dw);
+        rect.h = static_cast<uint32_t>(dh);
+        region.rects = &rect;
+        region.rectNumber = 1;
+    } else {
+        region.rects = nullptr;
+        region.rectNumber = 0;
+    }
     if (OH_NativeWindow_NativeWindowFlushBuffer(window_, buffer, -1, region) != 0) {
         HMLOGW("FlushBuffer 失败");
         return false;

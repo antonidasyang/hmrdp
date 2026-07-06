@@ -376,6 +376,24 @@ napi_value Disconnect(napi_env env, napi_callback_info /*info*/)
     return undefined;
 }
 
+// setTouchMode(trackpad: boolean) — false 直接触摸 / true 触控板
+napi_value SetTouchMode(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool trackpad = false;
+    if (argc >= 1)
+        napi_get_value_bool(env, args[0], &trackpad);
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_touchMapper.SetTrackpadMode(trackpad);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // setGestureActive(active: boolean) — 缩放/平移期间抑制触摸转鼠标
 napi_value SetGestureActive(napi_env env, napi_callback_info info)
 {
@@ -480,6 +498,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "sendScancode", nullptr, SendScancode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "respondCert", nullptr, RespondCert, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setGestureActive", nullptr, SetGestureActive, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setTouchMode", nullptr, SetTouchMode, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     RegisterXComponent(env, exports);

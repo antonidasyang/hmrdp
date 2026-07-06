@@ -32,13 +32,135 @@ void TouchMapper::Reset()
     mode_ = Mode::Idle;
     scrollResidual_ = 0;
     scrolled_ = false;
+    moved_ = false;
+}
+
+void TouchMapper::SetTrackpadMode(bool trackpad)
+{
+    trackpad_ = trackpad;
+    Reset();
+}
+
+void TouchMapper::EnsureCursor(RdpSession* session)
+{
+    if (cursorInit_)
+        return;
+    uint32_t w = 0;
+    uint32_t h = 0;
+    session->GetDesktopSize(w, h);
+    cursorX_ = w > 0 ? w / 2.0f : 0;
+    cursorY_ = h > 0 ? h / 2.0f : 0;
+    cursorInit_ = (w > 0 && h > 0);
+}
+
+void TouchMapper::SendCursorMove(RdpSession* session)
+{
+    uint32_t w = 0;
+    uint32_t h = 0;
+    session->GetDesktopSize(w, h);
+    if (w == 0 || h == 0)
+        return;
+    if (cursorX_ < 0)
+        cursorX_ = 0;
+    if (cursorY_ < 0)
+        cursorY_ = 0;
+    if (cursorX_ > w - 1)
+        cursorX_ = w - 1;
+    if (cursorY_ > h - 1)
+        cursorY_ = h - 1;
+    session->SendPointerDesktop(PTR_FLAGS_MOVE, (uint16_t)cursorX_, (uint16_t)cursorY_);
 }
 
 void TouchMapper::OnTouch(const OH_NativeXComponent_TouchEvent& event, RdpSession* session)
 {
     if (!session)
         return;
+    if (trackpad_)
+        OnTouchTrackpad(event, session);
+    else
+        OnTouchDirect(event, session);
+}
 
+// 触控板模式：单指相对移动虚拟指针，轻点=左键，双指滑动=滚轮，双指轻点=右键
+void TouchMapper::OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, RdpSession* session)
+{
+    EnsureCursor(session);
+    const float x = event.x;
+    const float y = event.y;
+    const uint32_t pressed = CountPressed(event);
+
+    switch (event.type) {
+        case OH_NATIVEXCOMPONENT_DOWN:
+            if (mode_ == Mode::Idle) {
+                mode_ = Mode::Pending;
+                downX_ = lastX_ = x;
+                downY_ = lastY_ = y;
+                downTimeNs_ = event.timeStamp;
+                moved_ = false;
+                scrolled_ = false;
+            } else if (pressed >= 2) {
+                mode_ = Mode::TwoFinger;
+                scrollResidual_ = 0;
+                scrolled_ = false;
+            }
+            break;
+
+        case OH_NATIVEXCOMPONENT_MOVE:
+            if (mode_ == Mode::Pending || mode_ == Mode::LeftDrag) {
+                const float dx = x - lastX_;
+                const float dy = y - lastY_;
+                if (fabsf(x - downX_) > kTapSlopPx || fabsf(y - downY_) > kTapSlopPx)
+                    moved_ = true;
+                cursorX_ += dx * trackpadSensitivity_;
+                cursorY_ += dy * trackpadSensitivity_;
+                SendCursorMove(session);
+            } else if (mode_ == Mode::TwoFinger) {
+                scrollResidual_ += (y - lastY_);
+                while (fabsf(scrollResidual_) >= kWheelStepPx) {
+                    const int32_t dir = scrollResidual_ > 0 ? 1 : -1;
+                    session->SendWheel(dir > 0 ? -120 : 120, 0, 0);
+                    scrollResidual_ -= dir * kWheelStepPx;
+                    scrolled_ = true;
+                }
+            }
+            lastX_ = x;
+            lastY_ = y;
+            break;
+
+        case OH_NATIVEXCOMPONENT_UP:
+            if (mode_ == Mode::Pending && pressed == 0) {
+                const int64_t elapsed = event.timeStamp - downTimeNs_;
+                if (!moved_ && elapsed < kTapTimeoutNs) {
+                    // 轻点 = 左键单击（在当前虚拟指针位置）
+                    session->SendPointerDesktop(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1,
+                                                (uint16_t)cursorX_, (uint16_t)cursorY_);
+                    session->SendPointerDesktop(PTR_FLAGS_BUTTON1, (uint16_t)cursorX_,
+                                                (uint16_t)cursorY_);
+                }
+                mode_ = Mode::Idle;
+            } else if (mode_ == Mode::TwoFinger && pressed == 0) {
+                const int64_t elapsed = event.timeStamp - downTimeNs_;
+                if (!scrolled_ && elapsed < kTapTimeoutNs) {
+                    session->SendPointerDesktop(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON2,
+                                                (uint16_t)cursorX_, (uint16_t)cursorY_);
+                    session->SendPointerDesktop(PTR_FLAGS_BUTTON2, (uint16_t)cursorX_,
+                                                (uint16_t)cursorY_);
+                }
+                mode_ = Mode::Idle;
+            } else if (pressed == 0) {
+                mode_ = Mode::Idle;
+            }
+            break;
+
+        case OH_NATIVEXCOMPONENT_CANCEL:
+        default:
+            Reset();
+            break;
+    }
+}
+
+void TouchMapper::OnTouchDirect(const OH_NativeXComponent_TouchEvent& event, RdpSession* session)
+{
     const float x = event.x;
     const float y = event.y;
     const uint32_t pressed = CountPressed(event);

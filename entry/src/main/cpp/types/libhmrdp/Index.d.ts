@@ -33,6 +33,8 @@ export const disconnect: () => void;
 export const respondCert: (decision: number) => void;
 /** 缩放/平移手势进行中时置 true，暂停触摸转鼠标，避免手势与点击互相干扰 */
 export const setGestureActive: (active: boolean) => void;
+/** 触摸操作模式：false 直接触摸（点哪是哪），true 触控板（相对指针） */
+export const setTouchMode: (trackpad: boolean) => void;
 export const getVersion: () => string;
 /** 发送一个 UTF-16 码元（按下+抬起），用于软键盘文本输入 */
 export const sendUnicode: (utf16Unit: number) => void;

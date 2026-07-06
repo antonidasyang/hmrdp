@@ -22,10 +22,18 @@ class TouchMapper {
 public:
     void OnTouch(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
     void Reset();
+    // false = 直接触摸模式，true = 触控板（相对指针）模式
+    void SetTrackpadMode(bool trackpad);
 
 private:
     enum class Mode : uint8_t { Idle, Pending, LeftDrag, TwoFinger };
 
+    void OnTouchDirect(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
+    void OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
+    void EnsureCursor(RdpSession* session);
+    void SendCursorMove(RdpSession* session);
+
+    bool trackpad_ = false;
     Mode mode_ = Mode::Idle;
     float downX_ = 0;
     float downY_ = 0;
@@ -33,7 +41,14 @@ private:
     float lastY_ = 0;
     float scrollResidual_ = 0;
     bool scrolled_ = false;
+    bool moved_ = false;
     int64_t downTimeNs_ = 0;
+
+    // 触控板虚拟指针（远端桌面坐标）
+    bool cursorInit_ = false;
+    float cursorX_ = 0;
+    float cursorY_ = 0;
+    float trackpadSensitivity_ = 1.6f;
 };
 
 // 外接鼠标事件（含悬停移动）
