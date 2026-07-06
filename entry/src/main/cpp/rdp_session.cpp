@@ -10,6 +10,7 @@
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <freerdp/error.h>
+#include <freerdp/client/channels.h>
 #include <winpr/synch.h>
 #include <winpr/wlog.h>
 #include <native_buffer/native_buffer.h>
@@ -22,9 +23,9 @@ namespace hmrdp {
 
 namespace {
 
-// freerdp 上下文扩展：携带宿主会话指针
+// freerdp 上下文扩展：内嵌 rdpClientContext 以复用 FreeRDP 客户端通道 helper
 struct HmContext {
-    rdpContext context;
+    rdpClientContext client;
     RdpSession* session;
 };
 
@@ -63,8 +64,14 @@ BOOL HmDesktopResize(rdpContext* context)
 
 BOOL HmPreConnect(freerdp* instance)
 {
-    // 通道装载（cliprdr 等后续里程碑启用时自动生效）
-    if (!freerdp_client_load_addins(instance->context->channels, instance->context->settings))
+    rdpContext* context = instance->context;
+    // 订阅通道连接事件：GFX 通道就绪时 FreeRDP helper 自动挂接 gdi 图形管线
+    PubSub_SubscribeChannelConnected(context->pubSub,
+                                     freerdp_client_OnChannelConnectedEventHandler);
+    PubSub_SubscribeChannelDisconnected(context->pubSub,
+                                        freerdp_client_OnChannelDisconnectedEventHandler);
+
+    if (!freerdp_client_load_addins(context->channels, context->settings))
         return FALSE;
     return TRUE;
 }
@@ -244,8 +251,18 @@ bool RdpSession::ApplySettings()
     ok = ok && freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, 100);
 
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_SoftwareGdi, TRUE);
-    // M4a 启用 GFX + H.264 前先走经典位图更新路径
-    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, FALSE);
+
+    // RDP8+ 图形管线 + H.264（AVC420 硬解，见 h264_ohos 子系统）
+    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
+    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_GfxH264, TRUE);
+    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
+    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, FALSE);
+    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, TRUE); // 无 H.264 时的软件回退
+    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_GfxSmallCache, FALSE);
+    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_GfxThinClient, FALSE);
+    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_SupportDynamicChannels, TRUE);
+
+    // 经典编解码回退（GFX 未协商时）
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, TRUE);
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_NSCodec, TRUE);
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_FastPathOutput, TRUE);

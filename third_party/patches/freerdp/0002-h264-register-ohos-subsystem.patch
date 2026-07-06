@@ -1,0 +1,45 @@
+注册 OHOS AVCodec H.264 硬解子系统（WITH_OHOS_CODEC 开启时优先使用）。
+子系统源码 h264_ohos.c 由 build_freerdp.sh 在配置前拷入 libfreerdp/codec/。
+OHOS 多媒体 NDK 符号在宿主 libhmrdp.so 最终链接阶段提供。
+
+--- a/libfreerdp/codec/h264.h
++++ b/libfreerdp/codec/h264.h
+@@ -94,6 +94,9 @@
+ #ifdef WITH_MEDIACODEC
+ 	extern const H264_CONTEXT_SUBSYSTEM g_Subsystem_mediacodec;
+ #endif
++#ifdef WITH_OHOS_CODEC
++	extern const H264_CONTEXT_SUBSYSTEM g_Subsystem_ohos;
++#endif
+ #if defined(_WIN32) && defined(WITH_MEDIA_FOUNDATION)
+ 	extern const H264_CONTEXT_SUBSYSTEM g_Subsystem_MF;
+ #endif
+--- a/libfreerdp/codec/h264.c
++++ b/libfreerdp/codec/h264.c
+@@ -692,6 +692,12 @@
+ {
+ 	int i = 0;
+
++#ifdef WITH_OHOS_CODEC
++	{
++		subSystems[i] = &g_Subsystem_ohos;
++		i++;
++	}
++#endif
+ #ifdef WITH_MEDIACODEC
+ 	{
+ 		subSystems[i] = &g_Subsystem_mediacodec;
+--- a/libfreerdp/codec/CMakeLists.txt
++++ b/libfreerdp/codec/CMakeLists.txt
+@@ -181,6 +181,11 @@
+   list(APPEND CODEC_LIBS ${MEDIACODEC})
+ endif()
+
++if(WITH_OHOS_CODEC)
++  # OHOS 多媒体 NDK 符号在最终 .so 链接阶段由宿主模块提供
++  list(APPEND CODEC_SRCS h264_ohos.c)
++endif()
++
+ add_library(freerdp-codecs OBJECT ${CODEC_SRCS})
+ freerdp_library_add(${CODEC_LIBS})
+ freerdp_object_library_add(freerdp-codecs)

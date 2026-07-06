@@ -24,6 +24,9 @@ fi
 rm -rf "$SRCDIR" "$BUILDDIR"
 tar -xzf "$TARBALL" -C "$TP_BUILD"
 
+# 拷入 OHOS H.264 硬解子系统源码（补丁负责注册与构建接线）
+cp "$(pwd)/freerdp_ohos/h264_ohos.c" "$SRCDIR/libfreerdp/codec/h264_ohos.c"
+
 # 应用 OHOS 适配补丁（按文件名顺序）
 if compgen -G "$PATCH_DIR/*.patch" >/dev/null; then
   for p in "$PATCH_DIR"/*.patch; do
@@ -39,7 +42,8 @@ cmake -S "$SRCDIR" -B "$BUILDDIR" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$TP_PREBUILT" \
   -DCMAKE_FIND_ROOT_PATH="$TP_PREBUILT" \
-  -DCMAKE_C_FLAGS="-D__MUSL__ -DOHOS" \
+  -DCMAKE_C_FLAGS="-D__MUSL__ -DOHOS -DWITH_OHOS_CODEC" \
+  -DWITH_OHOS_CODEC=ON \
   -DBUILD_SHARED_LIBS=OFF \
   -DOPENSSL_ROOT_DIR="$TP_PREBUILT" \
   -DOPENSSL_USE_STATIC_LIBS=ON \

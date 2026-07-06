@@ -27,6 +27,10 @@ target_link_libraries(hmrdp PUBLIC
     libhilog_ndk.z.so
     libnative_window.so
     libnative_buffer.so
+    # OHOS AVCodec（h264_ohos 硬解子系统符号）
+    libnative_media_core.so
+    libnative_media_codecbase.so
+    libnative_media_vdec.so
     # FreeRDP 静态内核（顺序敏感：client -> core -> winpr -> ssl -> crypto）
     ${TP_PREBUILT}/lib/libfreerdp-client3.a
     ${TP_PREBUILT}/lib/libfreerdp3.a
