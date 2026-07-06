@@ -1,0 +1,37 @@
+# ===== DevEco Studio / hvigor =====
+.hvigor/
+.idea/
+.clangd/
+.cxx/
+build/
+oh_modules/
+oh-package-lock.json5
+entry/oh-package-lock.json5
+**/.preview/
+**/BuildProfile.ets
+**/generated/
+
+# ===== 签名材料（绝不入库）=====
+*.p7b
+*.cer
+*.p12
+*.csr
+**/signing/
+build-profile.json5.local
+
+# ===== 交叉编译产物与三方源码 =====
+third_party/src/
+third_party/build/
+third_party/dist/
+# 预编译产物体积大，默认不入库（本地由脚本重建）
+third_party/prebuilt/
+
+# ===== macOS / 编辑器 =====
+.DS_Store
+*.swp
+*~
+
+# ===== 日志与临时 =====
+*.log
+hvigor-output*.json
+local.properties
