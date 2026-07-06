@@ -312,24 +312,34 @@ napi_value Connect(napi_env env, napi_callback_info info)
         return result;
     }
 
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_session && g_session->IsRunning()) {
-        napi_get_boolean(env, false, &result);
-        return result;
-    }
-    if (g_session) {
-        g_session->RequestStop();
-        g_session->Join();
-        g_session.reset();
-    }
-    if (g_stateTsfn) {
-        napi_release_threadsafe_function(g_stateTsfn, napi_tsfn_release);
+    // 先在锁外拆除旧会话：其 RDP 线程的回调也会取 g_mutex，
+    // 若持锁 Join 会与线程末尾的 NotifyState(Disconnected) 死锁。
+    std::unique_ptr<RdpSession> oldSession;
+    napi_threadsafe_function oldState = nullptr;
+    napi_threadsafe_function oldCert = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_session && g_session->IsRunning()) {
+            napi_get_boolean(env, false, &result);
+            return result;
+        }
+        oldSession = std::move(g_session);
+        oldState = g_stateTsfn;
+        oldCert = g_certTsfn;
         g_stateTsfn = nullptr;
-    }
-    if (g_certTsfn) {
-        napi_release_threadsafe_function(g_certTsfn, napi_tsfn_release);
         g_certTsfn = nullptr;
     }
+    if (oldSession) {
+        oldSession->RequestStop();
+        oldSession->Join(); // Join 后旧线程再无回调，释放 tsfn 才安全
+    }
+    oldSession.reset();
+    if (oldState)
+        napi_release_threadsafe_function(oldState, napi_tsfn_release);
+    if (oldCert)
+        napi_release_threadsafe_function(oldCert, napi_tsfn_release);
+
+    std::lock_guard<std::mutex> lock(g_mutex);
 
     napi_value resourceName = nullptr;
     napi_create_string_utf8(env, "hmrdpState", NAPI_AUTO_LENGTH, &resourceName);
