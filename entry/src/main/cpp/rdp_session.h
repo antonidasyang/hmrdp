@@ -36,9 +36,22 @@ struct SessionConfig {
 // 状态回调：由 RDP 线程调用，实现方负责线程安全（NAPI 侧用 TSFN）
 using StateCallback = void (*)(SessionState state, const char* message, void* userData);
 
+// 证书确认请求：由 RDP 线程调用后阻塞等待 ProvideCertDecision
+struct CertInfo {
+    const char* host;
+    uint16_t port;
+    const char* commonName;
+    const char* subject;
+    const char* issuer;
+    const char* fingerprint;
+    bool changed;
+};
+using CertCallback = void (*)(const CertInfo& info, void* userData);
+
 class RdpSession {
 public:
     RdpSession(SessionConfig config, StateCallback cb, void* cbUserData);
+    void SetCertCallback(CertCallback cb, void* userData);
     ~RdpSession();
 
     RdpSession(const RdpSession&) = delete;
@@ -69,6 +82,10 @@ public:
     void OnGraphicsDirty();                 // EndPaint：把 GDI 帧刷到 NativeWindow
     void OnDesktopResize(uint32_t w, uint32_t h);
     void NotifyState(SessionState state, const char* message);
+    // RDP 线程调用：通知 UI 并阻塞等待决策（0 拒绝 / 1 永久接受 / 2 本次接受）
+    uint32_t RequestCertDecision(const CertInfo& info);
+    // 任意线程调用：投递用户决策
+    void ProvideCertDecision(int32_t decision);
     const SessionConfig& Config() const { return config_; }
     freerdp* Instance() const { return instance_; }
 
@@ -114,6 +131,11 @@ private:
     std::mutex inputMutex_;
     std::deque<InputEvent> inputQueue_;
     HANDLE inputSignal_ = nullptr;
+
+    CertCallback certCb_ = nullptr;
+    void* certCbUserData_ = nullptr;
+    HANDLE certEvent_ = nullptr;
+    std::atomic<int32_t> certDecision_{ 0 };
 };
 
 } // namespace hmrdp

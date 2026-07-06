@@ -90,13 +90,22 @@ void HmPostDisconnect(freerdp* instance)
     gdi_free(instance);
 }
 
-// TODO(M3b): 接 ArkTS 证书信任弹窗；当前仅本会话临时接受
-DWORD HmVerifyCertificateEx(freerdp* /*instance*/, const char* host, UINT16 port,
-                            const char* /*common_name*/, const char* /*subject*/,
-                            const char* /*issuer*/, const char* fingerprint, DWORD /*flags*/)
+DWORD HmVerifyCertificateEx(freerdp* instance, const char* host, UINT16 port,
+                            const char* common_name, const char* subject, const char* issuer,
+                            const char* fingerprint, DWORD /*flags*/)
 {
-    HMLOGW("接受证书(临时): %{public}s:%{public}u fp=%{private}s", host, port, fingerprint);
-    return 2; // 仅本会话接受
+    CertInfo info = { host, port, common_name, subject, issuer, fingerprint, false };
+    return SessionOf(instance->context)->RequestCertDecision(info);
+}
+
+DWORD HmVerifyChangedCertificateEx(freerdp* instance, const char* host, UINT16 port,
+                                   const char* common_name, const char* subject,
+                                   const char* issuer, const char* new_fingerprint,
+                                   const char* /*old_subject*/, const char* /*old_issuer*/,
+                                   const char* /*old_fingerprint*/, DWORD /*flags*/)
+{
+    CertInfo info = { host, port, common_name, subject, issuer, new_fingerprint, true };
+    return SessionOf(instance->context)->RequestCertDecision(info);
 }
 
 BOOL HmClientNew(freerdp* instance, rdpContext* context)
@@ -105,6 +114,7 @@ BOOL HmClientNew(freerdp* instance, rdpContext* context)
     instance->PostConnect = HmPostConnect;
     instance->PostDisconnect = HmPostDisconnect;
     instance->VerifyCertificateEx = HmVerifyCertificateEx;
+    instance->VerifyChangedCertificateEx = HmVerifyChangedCertificateEx;
     (void)context;
     return TRUE;
 }
@@ -159,6 +169,41 @@ RdpSession::~RdpSession()
         CloseHandle(inputSignal_);
         inputSignal_ = nullptr;
     }
+    if (certEvent_) {
+        CloseHandle(certEvent_);
+        certEvent_ = nullptr;
+    }
+}
+
+void RdpSession::SetCertCallback(CertCallback cb, void* userData)
+{
+    certCb_ = cb;
+    certCbUserData_ = userData;
+}
+
+uint32_t RdpSession::RequestCertDecision(const CertInfo& info)
+{
+    if (!certCb_ || !certEvent_) {
+        HMLOGW("无证书确认回调，默认本次接受: %{public}s:%{public}u", info.host, info.port);
+        return 2;
+    }
+    certDecision_.store(-1);
+    certCb_(info, certCbUserData_);
+
+    // 等待用户决策；stopEvent 触发或超时(120s)按拒绝处理
+    HANDLE handles[2] = { certEvent_, stopEvent_ };
+    const DWORD status = WaitForMultipleObjects(2, handles, FALSE, 120000);
+    if (status != WAIT_OBJECT_0)
+        return 0;
+    const int32_t decision = certDecision_.load();
+    return decision < 0 ? 0 : static_cast<uint32_t>(decision);
+}
+
+void RdpSession::ProvideCertDecision(int32_t decision)
+{
+    certDecision_.store(decision);
+    if (certEvent_)
+        SetEvent(certEvent_);
 }
 
 bool RdpSession::ApplySettings()
@@ -206,6 +251,10 @@ bool RdpSession::ApplySettings()
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_FastPathOutput, TRUE);
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_FastPathInput, TRUE);
 
+    // 网络级自动重连（RDP auto-reconnect cookie）
+    ok = ok && freerdp_settings_set_bool(settings, FreeRDP_AutoReconnectionEnabled, TRUE);
+    ok = ok && freerdp_settings_set_uint32(settings, FreeRDP_AutoReconnectMaxRetries, 3);
+
     return ok;
 }
 
@@ -237,7 +286,8 @@ bool RdpSession::Start()
 
     stopEvent_ = CreateEventA(nullptr, TRUE, FALSE, nullptr);
     inputSignal_ = CreateEventA(nullptr, FALSE, FALSE, nullptr); // 自动复位
-    if (!stopEvent_ || !inputSignal_)
+    certEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    if (!stopEvent_ || !inputSignal_ || !certEvent_)
         return false;
 
     running_.store(true);

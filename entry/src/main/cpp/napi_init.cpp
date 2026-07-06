@@ -26,10 +26,21 @@ OHNativeWindow* g_window = nullptr;
 uint64_t g_surfaceW = 0;
 uint64_t g_surfaceH = 0;
 napi_threadsafe_function g_stateTsfn = nullptr;
+napi_threadsafe_function g_certTsfn = nullptr;
 
 struct StateEvent {
     int32_t state;
     std::string message;
+};
+
+struct CertEvent {
+    std::string host;
+    uint32_t port;
+    std::string commonName;
+    std::string subject;
+    std::string issuer;
+    std::string fingerprint;
+    bool changed;
 };
 
 // ---- TSFN: RDP 线程 -> ArkTS ----
@@ -50,12 +61,18 @@ void CallJsStateCallback(napi_env env, napi_value jsCallback, void* /*context*/,
 void OnSessionState(SessionState state, const char* message, void* /*userData*/)
 {
     napi_threadsafe_function tsfn = nullptr;
+    napi_threadsafe_function certTsfn = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         tsfn = g_stateTsfn;
-        if (state == SessionState::Disconnected)
-            g_stateTsfn = nullptr; // 最后一条消息之后释放
+        if (state == SessionState::Disconnected) { // 最后一条消息之后释放
+            g_stateTsfn = nullptr;
+            certTsfn = g_certTsfn;
+            g_certTsfn = nullptr;
+        }
     }
+    if (certTsfn)
+        napi_release_threadsafe_function(certTsfn, napi_tsfn_release);
     if (!tsfn)
         return;
     auto* event = new StateEvent{ static_cast<int32_t>(state), message ? message : "" };
@@ -63,6 +80,59 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
         delete event;
     if (state == SessionState::Disconnected)
         napi_release_threadsafe_function(tsfn, napi_tsfn_release);
+}
+
+void CallJsCertCallback(napi_env env, napi_value jsCallback, void* /*context*/, void* data)
+{
+    std::unique_ptr<CertEvent> event(static_cast<CertEvent*>(data));
+    if (!env || !jsCallback || !event)
+        return;
+    napi_value obj = nullptr;
+    napi_create_object(env, &obj);
+    napi_value value = nullptr;
+    napi_create_string_utf8(env, event->host.c_str(), NAPI_AUTO_LENGTH, &value);
+    napi_set_named_property(env, obj, "host", value);
+    napi_create_uint32(env, event->port, &value);
+    napi_set_named_property(env, obj, "port", value);
+    napi_create_string_utf8(env, event->commonName.c_str(), NAPI_AUTO_LENGTH, &value);
+    napi_set_named_property(env, obj, "commonName", value);
+    napi_create_string_utf8(env, event->subject.c_str(), NAPI_AUTO_LENGTH, &value);
+    napi_set_named_property(env, obj, "subject", value);
+    napi_create_string_utf8(env, event->issuer.c_str(), NAPI_AUTO_LENGTH, &value);
+    napi_set_named_property(env, obj, "issuer", value);
+    napi_create_string_utf8(env, event->fingerprint.c_str(), NAPI_AUTO_LENGTH, &value);
+    napi_set_named_property(env, obj, "fingerprint", value);
+    napi_get_boolean(env, event->changed, &value);
+    napi_set_named_property(env, obj, "changed", value);
+
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    napi_value args[1] = { obj };
+    napi_call_function(env, undefined, jsCallback, 1, args, nullptr);
+}
+
+void OnCertRequest(const hmrdp::CertInfo& info, void* /*userData*/)
+{
+    napi_threadsafe_function tsfn = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        tsfn = g_certTsfn;
+    }
+    if (!tsfn) {
+        // 无 UI 处理方：直接拒绝，避免 RDP 线程等满超时
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_session)
+            g_session->ProvideCertDecision(0);
+        return;
+    }
+    auto* event = new CertEvent{ info.host ? info.host : "",     info.port,
+                                 info.commonName ? info.commonName : "",
+                                 info.subject ? info.subject : "",
+                                 info.issuer ? info.issuer : "",
+                                 info.fingerprint ? info.fingerprint : "",
+                                 info.changed };
+    if (napi_call_threadsafe_function(tsfn, event, napi_tsfn_blocking) != napi_ok)
+        delete event;
 }
 
 // ---- XComponent 回调（UI 线程）----
@@ -212,13 +282,13 @@ napi_value GetVersion(napi_env env, napi_callback_info /*info*/)
 
 napi_value Connect(napi_env env, napi_callback_info info)
 {
-    size_t argc = 2;
-    napi_value args[2] = {};
+    size_t argc = 3;
+    napi_value args[3] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     napi_value result = nullptr;
-    if (argc < 2) {
-        napi_throw_error(env, nullptr, "connect(config, onState) 需要 2 个参数");
+    if (argc < 3) {
+        napi_throw_error(env, nullptr, "connect(config, onState, onCert) 需要 3 个参数");
         return result;
     }
 
@@ -251,6 +321,10 @@ napi_value Connect(napi_env env, napi_callback_info info)
         napi_release_threadsafe_function(g_stateTsfn, napi_tsfn_release);
         g_stateTsfn = nullptr;
     }
+    if (g_certTsfn) {
+        napi_release_threadsafe_function(g_certTsfn, napi_tsfn_release);
+        g_certTsfn = nullptr;
+    }
 
     napi_value resourceName = nullptr;
     napi_create_string_utf8(env, "hmrdpState", NAPI_AUTO_LENGTH, &resourceName);
@@ -259,8 +333,17 @@ napi_value Connect(napi_env env, napi_callback_info info)
         napi_throw_error(env, nullptr, "创建状态回调失败");
         return result;
     }
+    napi_create_string_utf8(env, "hmrdpCert", NAPI_AUTO_LENGTH, &resourceName);
+    if (napi_create_threadsafe_function(env, args[2], nullptr, resourceName, 0, 1, nullptr, nullptr,
+                                        nullptr, CallJsCertCallback, &g_certTsfn) != napi_ok) {
+        napi_release_threadsafe_function(g_stateTsfn, napi_tsfn_release);
+        g_stateTsfn = nullptr;
+        napi_throw_error(env, nullptr, "创建证书回调失败");
+        return result;
+    }
 
     g_session = std::make_unique<RdpSession>(std::move(config), OnSessionState, nullptr);
+    g_session->SetCertCallback(OnCertRequest, nullptr);
     if (g_window)
         g_session->AttachWindow(g_window, g_surfaceW, g_surfaceH);
 
@@ -269,6 +352,8 @@ napi_value Connect(napi_env env, napi_callback_info info)
         g_session.reset();
         napi_release_threadsafe_function(g_stateTsfn, napi_tsfn_release);
         g_stateTsfn = nullptr;
+        napi_release_threadsafe_function(g_certTsfn, napi_tsfn_release);
+        g_certTsfn = nullptr;
     }
     napi_get_boolean(env, ok, &result);
     return result;
@@ -280,6 +365,26 @@ napi_value Disconnect(napi_env env, napi_callback_info /*info*/)
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_session)
             g_session->RequestStop();
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// respondCert(decision: number)  0=拒绝 1=永久接受 2=仅本次
+napi_value RespondCert(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t decision = 0;
+    if (argc >= 1)
+        napi_get_value_int32(env, args[0], &decision);
+
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_session)
+            g_session->ProvideCertDecision(decision);
     }
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
@@ -353,6 +458,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "disconnect", nullptr, Disconnect, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sendScancode", nullptr, SendScancode, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "respondCert", nullptr, RespondCert, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     RegisterXComponent(env, exports);
