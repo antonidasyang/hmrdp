@@ -2,6 +2,7 @@ import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { EditPCPage, EditPCParams } from './EditPCPage';
 import { SessionPage } from './SessionPage';
+import { AboutPage } from './AboutPage';
 import { SessionParams } from '../model/SessionParams';
 import { PCEntry, displayName } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
@@ -92,6 +93,8 @@ struct Index {
       EditPCPage()
     } else if (name === 'session') {
       SessionPage()
+    } else if (name === 'about') {
+      AboutPage()
     }
   }
 
@@ -205,6 +208,13 @@ struct Index {
         symbolIcon: new SymbolGlyphModifier($r('sys.symbol.plus')),
         action: () => {
           this.pathStack.pushPathByName('edit', new EditPCParams(''));
+        }
+      },
+      {
+        value: 'about',
+        symbolIcon: new SymbolGlyphModifier($r('sys.symbol.info_circle')),
+        action: () => {
+          this.pathStack.pushPathByName('about', null);
         }
       }
     ])

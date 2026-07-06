@@ -35,13 +35,21 @@ docs/                文档（隐私政策、上架材料等）
 
 ```bash
 # 1. 交叉编译三方库（OpenSSL、FreeRDP），产物输出到 third_party/prebuilt/
-cd third_party && ./build_all.sh
+cd third_party && ./build_all.sh && cd ..
 
-# 2. 构建 HAP（或直接用 DevEco Studio 打开工程）
-./hvigorw assembleHap --mode module -p product=default
+# 2. 构建 HAP（命令行，使用 DevEco 自带 node/JBR/hvigor）
+scripts/build_hap.sh            # debug，未签名
 ```
+也可直接用 DevEco Studio 打开工程构建。真机安装与被控端（Windows）配置见
+[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)；上架见
+[docs/APPGALLERY_CHECKLIST.md](docs/APPGALLERY_CHECKLIST.md)。
 
-真机安装与被控端（Windows）配置见 [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)。
+## 性能说明
+
+- 优先协商 RDP8+ 图形管线（GFX）与 H.264（AVC420），由系统 AVCodec 硬件解码
+  （`third_party/freerdp_ohos/h264_ohos.c`）。被控端为 Windows 8 / Server 2012 及以上时生效。
+- 未协商 H.264 时回退到 Progressive / RemoteFX / NSCodec 软件解码，仍可用。
+- 渲染按事件循环合并提交、脏区域 damage 提示，降低合成开销。
 
 ## 版权与第三方声明
 
