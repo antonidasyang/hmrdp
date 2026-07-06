@@ -17,11 +17,15 @@ include_directories(
 
 add_library(hmrdp SHARED
     napi_init.cpp
+    rdp_session.cpp
 )
 
 target_link_libraries(hmrdp PUBLIC
     libace_napi.z.so
+    libace_ndk.z.so
     libhilog_ndk.z.so
+    libnative_window.so
+    libnative_buffer.so
     # FreeRDP 静态内核（顺序敏感：client -> core -> winpr -> ssl -> crypto）
     ${TP_PREBUILT}/lib/libfreerdp-client3.a
     ${TP_PREBUILT}/lib/libfreerdp3.a

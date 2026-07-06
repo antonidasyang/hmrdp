@@ -1,1 +1,17 @@
+export interface ConnectConfig {
+  host: string;
+  port?: number;
+  username: string;
+  password: string;
+  domain?: string;
+  /** 远端桌面分辨率；0 或缺省 = 跟随 surface 尺寸 */
+  width?: number;
+  height?: number;
+  /** Windows 显示缩放百分比 [100, 500] */
+  scale?: number;
+}
+
+/** state: 0 连接中 / 1 已连接 / 2 已断开（message 为错误信息，正常断开为空） */
+export const connect: (config: ConnectConfig, onState: (state: number, message: string) => void) => boolean;
+export const disconnect: () => void;
 export const getVersion: () => string;
