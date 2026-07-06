@@ -1,0 +1,14 @@
+OpenHarmony 的 musl libc 未实现 pthread_cancel（与 Android bionic 相同）。
+让 OHOS 走与 Android 一致的降级路径：TerminateThread 仅记录不支持日志。
+
+--- a/winpr/libwinpr/thread/thread.c
++++ b/winpr/libwinpr/thread/thread.c
+@@ -1040,7 +1040,7 @@
+ 	if (!run_mutex_fkt(pthread_mutex_checked_lock, &thread->mutex))
+ 		return FALSE;
+
+-#ifndef ANDROID
++#if !defined(ANDROID) && !defined(__OHOS__)
+ 	pthread_cancel(thread->thread);
+ #else
+ 	WLog_ERR(TAG, "Function not supported on this platform!");

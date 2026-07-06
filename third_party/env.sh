@@ -26,7 +26,8 @@ export STRIP="$OHOS_LLVM/bin/llvm-strip"
 
 export OHOS_CFLAGS="--target=$OHOS_TARGET --sysroot=$OHOS_SYSROOT -fPIC -D__MUSL__ -DOHOS"
 
-TP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 兼容 bash / zsh 两种 source 方式
+TP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 export TP_SRC="$TP_DIR/src"
 export TP_BUILD="$TP_DIR/build"
 export TP_PREBUILT="$TP_DIR/prebuilt/$OHOS_ARCH"
