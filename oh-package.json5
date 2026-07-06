@@ -1,0 +1,8 @@
+{
+  "modelVersion": "6.0.0",
+  "description": "HMRDP - RDP client for OpenHarmony/HarmonyOS",
+  "dependencies": {
+  },
+  "devDependencies": {
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "HMRDP main module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Remote desktop (RDP) client"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "HMRDP"
+    }
+  ]
+}
