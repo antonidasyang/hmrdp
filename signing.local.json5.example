@@ -1,0 +1,16 @@
+// 本地签名配置模板。复制为 signing.local.json5（已被 .gitignore 排除，不会入库）并填入真实值。
+// 密钥库/证书为开发者级，可与同一开发者的其它应用复用；
+// profile(.p7b) 必须是为本应用 bundleName(com.d2ssoft.hmrdp) 在 AGC 申请的发布 Profile。
+{
+  "name": "default",
+  "type": "HarmonyOS",
+  "material": {
+    "storeFile": "/path/to/your.p12",
+    "storePassword": "<DevEco 加密的密钥库密码>",
+    "keyAlias": "<别名>",
+    "keyPassword": "<DevEco 加密的密钥密码>",
+    "signAlg": "SHA256withECDSA",
+    "profile": "/path/to/hmrdpRelease.p7b",
+    "certpath": "/path/to/your.cer"
+  }
+}
