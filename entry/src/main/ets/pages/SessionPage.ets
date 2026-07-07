@@ -109,6 +109,11 @@ export struct SessionPage {
     this.offsetY = 0;
   }
 
+  aboutToAppear(): void {
+    // 大屏分栏时隐藏列表栏，让会话占满整窗
+    AppStorage.setOrCreate('hmrdpInSession', true);
+  }
+
   private ctx(): common.Context {
     return this.getUIContext().getHostContext()!;
   }
@@ -429,6 +434,7 @@ export struct SessionPage {
       }
     })
     .onDisAppear(() => {
+      AppStorage.setOrCreate('hmrdpInSession', false);
       this.releaseKeyboard();
       hmrdp.disconnect();
     })

@@ -16,6 +16,8 @@ struct Index {
   @State pcs: PCEntry[] = [];
   @State coreVersion: string = '';
   @StorageProp('pcsVersion') @Watch('reload') pcsVersion: number = 0;
+  // 会话页需全屏：大屏(分栏)时隐藏左侧列表栏
+  @StorageProp('hmrdpInSession') inSession: boolean = false;
   private askTarget: PCEntry | null = null;
   private dialogController: CustomDialogController = new CustomDialogController({
     builder: PasswordDialog({
@@ -179,16 +181,23 @@ struct Index {
           .layoutWeight(1)
           .justifyContent(FlexAlign.Center)
         } else {
-          List({ space: 10 }) {
-            ForEach(this.pcs, (pc: PCEntry) => {
-              ListItem() {
-                this.pcCard(pc)
-              }
-            }, (pc: PCEntry) => pc.id)
+          // 响应式多列：手机 1 列，平板 2 列，PC/大屏 3 列
+          Scroll() {
+            GridRow({
+              columns: { xs: 1, sm: 1, md: 2, lg: 3 } as GridRowColumnOption,
+              gutter: { x: 10, y: 10 } as GutterOption
+            }) {
+              ForEach(this.pcs, (pc: PCEntry) => {
+                GridCol() {
+                  this.pcCard(pc)
+                }
+              }, (pc: PCEntry) => pc.id)
+            }
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
           }
-          .padding({ left: 16, right: 16, top: 8 })
           .width('100%')
           .layoutWeight(1)
+          .align(Alignment.Top)
         }
 
         Text(`HMRDP · ${this.coreVersion}`)
@@ -219,6 +228,7 @@ struct Index {
       }
     ])
     .navDestination(this.routeMap)
-    .mode(NavigationMode.Stack)
+    .mode(NavigationMode.Auto)
+    .hideNavBar(this.inSession)
   }
 }
