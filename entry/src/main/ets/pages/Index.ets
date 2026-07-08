@@ -3,9 +3,12 @@ import { common } from '@kit.AbilityKit';
 import { EditPCPage, EditPCParams } from './EditPCPage';
 import { SessionPage } from './SessionPage';
 import { AboutPage } from './AboutPage';
+import { AccountsPage } from './AccountsPage';
+import { EditAccountPage } from './EditAccountPage';
 import { SessionParams } from '../model/SessionParams';
 import { PCEntry, displayName } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
+import { AccountStore } from '../model/AccountStore';
 import { PasswordDialog } from '../components/PasswordDialog';
 import hmrdp from 'libhmrdp.so';
 
@@ -54,28 +57,47 @@ struct Index {
   }
 
   private connectTo(pc: PCEntry): void {
+    // 关联账号优先解析
+    if (pc.accountId !== undefined && pc.accountId.length > 0) {
+      const acct = AccountStore.find(this.ctx(), pc.accountId);
+      if (acct) {
+        if (acct.hasPassword) {
+          AccountStore.getPassword(acct.id).then((password: string | null) => {
+            if (password !== null) {
+              this.startSession(pc, acct.username, password);
+            } else {
+              this.askCredentials(pc, acct.username);
+            }
+          });
+        } else {
+          this.askCredentials(pc, acct.username);
+        }
+        return;
+      }
+      // 账号已被删除 → 退回本机凭据
+    }
     if (pc.hasPassword && pc.username.length > 0) {
       PCStore.getPassword(pc.id).then((password: string | null) => {
         if (password !== null) {
           this.startSession(pc, pc.username, password);
         } else {
-          this.askCredentials(pc);
+          this.askCredentials(pc, pc.username);
         }
       });
     } else {
-      this.askCredentials(pc);
+      this.askCredentials(pc, pc.username);
     }
   }
 
-  private askCredentials(pc: PCEntry): void {
+  private askCredentials(pc: PCEntry, username: string): void {
     this.askTarget = pc;
     // 重建 controller 以刷新 builder 参数
     this.dialogController = new CustomDialogController({
       builder: PasswordDialog({
         pcName: displayName(pc),
-        username: pc.username,
-        onConfirm: (username: string, password: string) => {
-          this.startSession(pc, username, password);
+        username: username,
+        onConfirm: (u: string, password: string) => {
+          this.startSession(pc, u, password);
         }
       }),
       autoCancel: true
@@ -97,6 +119,10 @@ struct Index {
       SessionPage()
     } else if (name === 'about') {
       AboutPage()
+    } else if (name === 'accounts') {
+      AccountsPage()
+    } else if (name === 'editAccount') {
+      EditAccountPage()
     }
   }
 
@@ -117,43 +143,65 @@ struct Index {
   @Builder
   pcCard(pc: PCEntry) {
     Row({ space: 12 }) {
-      Column() {
-        SymbolGlyph($r('sys.symbol.computer'))
-          .fontSize(28)
-          .fontColor(['#1E7FD9'])
-      }
-      .width(52)
-      .height(52)
-      .borderRadius(12)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor('#141E7FD9')
+      // 点击主体区 = 连接（图标 + 友好名/地址）
+      Row({ space: 12 }) {
+        Column() {
+          SymbolGlyph($r('sys.symbol.computer'))
+            .fontSize(28)
+            .fontColor(['#1E7FD9'])
+        }
+        .width(52)
+        .height(52)
+        .borderRadius(12)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor('#141E7FD9')
 
-      Column({ space: 4 }) {
-        Text(displayName(pc))
-          .fontSize(16)
-          .fontWeight(FontWeight.Medium)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(pc.username.length > 0 ? `${pc.host} · ${pc.username}` : pc.host)
-          .fontSize(13)
-          .fontColor($r('sys.color.font_secondary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Column({ space: 4 }) {
+          // 有友好名显示友好名，否则直接显示地址
+          Text(displayName(pc))
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(pc.username.length > 0 ? `${pc.host} · ${pc.username}` : pc.host)
+            .fontSize(13)
+            .fontColor($r('sys.color.font_secondary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
       }
-      .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
+      .onClick(() => {
+        this.connectTo(pc);
+      })
 
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(18)
-        .fontColor([$r('sys.color.font_tertiary')])
+      // 显式「更多」按钮：点击弹出编辑/删除（PC 与触摸都可用，不再依赖长按）
+      SymbolGlyph($r('sys.symbol.ellipsis_circle'))
+        .fontSize(22)
+        .fontColor([$r('sys.color.font_secondary')])
+        .padding(8)
+        .borderRadius(8)
+        .bindMenu([
+          {
+            value: '编辑',
+            action: () => {
+              this.pathStack.pushPathByName('edit', new EditPCParams(pc.id));
+            }
+          },
+          {
+            value: '删除',
+            action: () => {
+              this.removePC(pc);
+            }
+          }
+        ] as MenuElement[])
     }
     .width('100%')
     .padding(14)
     .borderRadius(16)
     .backgroundColor($r('sys.color.comp_background_list_card'))
-    .onClick(() => {
-      this.connectTo(pc);
-    })
     .bindContextMenu(this.cardMenu(pc), ResponseType.LongPress)
   }
 
@@ -217,6 +265,13 @@ struct Index {
         symbolIcon: new SymbolGlyphModifier($r('sys.symbol.plus')),
         action: () => {
           this.pathStack.pushPathByName('edit', new EditPCParams(''));
+        }
+      },
+      {
+        value: 'accounts',
+        symbolIcon: new SymbolGlyphModifier($r('sys.symbol.person_2')),
+        action: () => {
+          this.pathStack.pushPathByName('accounts', null);
         }
       },
       {

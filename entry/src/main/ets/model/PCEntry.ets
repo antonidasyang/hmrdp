@@ -8,6 +8,8 @@ export interface PCEntry {
   username: string;
   /** 密码是否已保存到系统关键资产（Asset Store） */
   hasPassword: boolean;
+  /** 关联的已保存账号 id；非空则连接时优先用该账号的凭据 */
+  accountId?: string;
   /** 远端桌面分辨率，0 = 跟随屏幕 */
   width: number;
   height: number;

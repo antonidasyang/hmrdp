@@ -2,6 +2,9 @@ import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { PCEntry } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
+import { AccountEntry, accountDisplay } from '../model/AccountEntry';
+import { AccountStore } from '../model/AccountStore';
+import { EditAccountParams } from './EditAccountPage';
 
 export class EditPCParams {
   /** 空串 = 新建 */
@@ -48,10 +51,47 @@ export struct EditPCPage {
   @State resolutionIndex: number = 0;
   @State scaleIndex: number = 0;
   @State editingId: string = '';
+  @State accounts: AccountEntry[] = [];
+  /** 选中的已保存账号 id；'' = 手动输入 */
+  @State accountId: string = '';
+  @StorageProp('accountsVersion') @Watch('reloadAccounts') accountsVersion: number = 0;
   private pathStack: NavPathStack | null = null;
 
   private ctx(): common.Context {
     return this.getUIContext().getHostContext()!;
+  }
+
+  reloadAccounts(): void {
+    this.accounts = AccountStore.load(this.ctx());
+    // 关联的账号若被删除则退回手动
+    if (this.accountId.length > 0 && !this.accounts.some((a) => a.id === this.accountId)) {
+      this.accountId = '';
+    }
+  }
+
+  /** Select 选中项：0 = 手动输入，i+1 = accounts[i] */
+  private accountSelIndex(): number {
+    if (this.accountId.length === 0) {
+      return 0;
+    }
+    const i = this.accounts.findIndex((a) => a.id === this.accountId);
+    return i < 0 ? 0 : i + 1;
+  }
+
+  private accountSelLabel(): string {
+    const idx = this.accountSelIndex();
+    if (idx === 0) {
+      return '手动输入';
+    }
+    return accountDisplay(this.accounts[idx - 1]);
+  }
+
+  private accountOptions(): SelectOption[] {
+    const opts: SelectOption[] = [{ value: '手动输入' }];
+    for (const a of this.accounts) {
+      opts.push({ value: accountDisplay(a) });
+    }
+    return opts;
   }
 
   private loadForEdit(id: string): void {
@@ -64,6 +104,7 @@ export struct EditPCPage {
     this.hostname = pc.port === 3389 ? pc.host : `${pc.host}:${pc.port}`;
     this.username = pc.username;
     this.hasSavedPassword = pc.hasPassword;
+    this.accountId = pc.accountId ?? '';
     this.resolutionIndex = Math.max(0, RESOLUTIONS.findIndex((r) => r.width === pc.width && r.height === pc.height));
     this.scaleIndex = Math.max(0, SCALES.findIndex((s) => s.value === pc.scale));
   }
@@ -94,8 +135,16 @@ export struct EditPCPage {
     const id = this.editingId.length > 0 ? this.editingId : PCStore.newId();
     const old = PCStore.load(this.ctx()).find((it) => it.id === id);
 
+    const useAccount = this.accountId.length > 0;
+    const account = useAccount ? this.accounts.find((a) => a.id === this.accountId) : undefined;
+
+    let username = this.username.trim();
     let hasPassword = this.hasSavedPassword;
-    if (this.password.length > 0) {
+    if (useAccount && account) {
+      // 账号提供凭据：用户名取账号（冗余存一份便于列表显示），本机不再单独存密码
+      username = account.username;
+      hasPassword = false;
+    } else if (this.password.length > 0) {
       await PCStore.savePassword(id, this.password);
       hasPassword = true;
     }
@@ -105,8 +154,9 @@ export struct EditPCPage {
       name: this.friendlyName.trim(),
       host: parsed[0],
       port: Number.parseInt(parsed[1]),
-      username: this.username.trim(),
+      username: username,
       hasPassword: hasPassword,
+      accountId: useAccount ? this.accountId : undefined,
       width: RESOLUTIONS[this.resolutionIndex].width,
       height: RESOLUTIONS[this.resolutionIndex].height,
       scale: SCALES[this.scaleIndex].value,
@@ -164,28 +214,59 @@ export struct EditPCPage {
               this.friendlyName = v;
             })
 
-          this.sectionTitle('用户账户（留空则连接时询问）')
-          TextInput({ placeholder: '用户名（如 Administrator 或 user@domain）', text: this.username })
-            .type(InputType.USER_NAME)
-            .onChange((v: string) => {
-              this.username = v;
-            })
-          TextInput({
-            placeholder: this.hasSavedPassword ? '密码已保存（留空保持不变）' : '密码（可选，保存在系统加密存储）',
-            text: this.password
-          })
-            .type(InputType.Password)
-            .onChange((v: string) => {
-              this.password = v;
-            })
-          if (this.hasSavedPassword) {
-            Button('清除已保存的密码')
-              .buttonStyle(ButtonStyleMode.TEXTUAL)
-              .fontColor($r('sys.color.warning'))
-              .onClick(() => {
-                this.clearPassword();
+          this.sectionTitle('用户账户')
+          Row() {
+            Text('账号')
+              .fontSize(15)
+            Blank()
+            Select(this.accountOptions())
+              .selected(this.accountSelIndex())
+              .value(this.accountSelLabel())
+              .onSelect((index: number) => {
+                this.accountId = index === 0 ? '' : this.accounts[index - 1].id;
               })
           }
+          .width('100%')
+
+          if (this.accountId.length === 0) {
+            TextInput({ placeholder: '用户名（如 Administrator 或 user@domain）', text: this.username })
+              .type(InputType.USER_NAME)
+              .onChange((v: string) => {
+                this.username = v;
+              })
+            TextInput({
+              placeholder: this.hasSavedPassword ? '密码已保存（留空保持不变）' : '密码（可选，保存在系统加密存储）',
+              text: this.password
+            })
+              .type(InputType.Password)
+              .onChange((v: string) => {
+                this.password = v;
+              })
+            if (this.hasSavedPassword) {
+              Button('清除已保存的密码')
+                .buttonStyle(ButtonStyleMode.TEXTUAL)
+                .fontColor($r('sys.color.warning'))
+                .onClick(() => {
+                  this.clearPassword();
+                })
+            }
+            Text('留空则连接时询问')
+              .fontSize(12)
+              .fontColor($r('sys.color.font_tertiary'))
+              .alignSelf(ItemAlign.Start)
+          } else {
+            Text(`将使用账号「${this.accountSelLabel()}」的用户名与密码`)
+              .fontSize(13)
+              .fontColor($r('sys.color.font_secondary'))
+              .alignSelf(ItemAlign.Start)
+              .margin({ top: 4 })
+          }
+          Button('＋ 新建账号')
+            .buttonStyle(ButtonStyleMode.TEXTUAL)
+            .alignSelf(ItemAlign.Start)
+            .onClick(() => {
+              this.pathStack?.pushPathByName('editAccount', new EditAccountParams(''));
+            })
 
           this.sectionTitle('显示')
           Row() {
@@ -242,6 +323,7 @@ export struct EditPCPage {
     .title(this.editingId.length > 0 ? '编辑电脑' : '添加电脑')
     .onReady((ctx: NavDestinationContext) => {
       this.pathStack = ctx.pathStack;
+      this.reloadAccounts();
       if (ctx.pathInfo.param instanceof EditPCParams) {
         const params = ctx.pathInfo.param as EditPCParams;
         if (params.id.length > 0) {
