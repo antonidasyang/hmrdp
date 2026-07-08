@@ -86,6 +86,7 @@ struct Index {
     const ctx = this.ctx() as common.UIAbilityContext;
     const want: Want = {
       bundleName: ctx.abilityInfo.bundleName,
+      moduleName: ctx.abilityInfo.moduleName,
       abilityName: 'SessionAbility',
       parameters: {
         host: params.host,

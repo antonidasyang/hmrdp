@@ -136,22 +136,17 @@ export struct SessionPage {
     return this.getUIContext().getHostContext()!;
   }
 
-  /** 全屏：2in1 真正最大化占满整屏（独立全屏桌面）；手机/平板沉浸式隐藏系统栏 */
+  /** 全屏（仅手机/平板）：沉浸式隐藏系统栏。PC 会话窗口由 SessionAbility 统一最大化管理，
+   *  页面不再直接操作窗口（避免 maximize/recover 冲突导致崩溃）。 */
   private async applyFullscreen(on: boolean): Promise<void> {
+    if (this.isPc) {
+      return;
+    }
     try {
       const win = await window.getLastWindow(this.ctx());
-      if (this.isPc) {
-        // 最大化到整屏、隐藏标题栏与 dock 悬停，成为独占的全屏桌面
-        if (on) {
-          await win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER);
-        } else {
-          await win.recover();
-        }
-      } else {
-        await win.setWindowLayoutFullScreen(on);
-        const bars: Array<'status' | 'navigation'> = on ? [] : ['status', 'navigation'];
-        await win.setWindowSystemBarEnable(bars);
-      }
+      await win.setWindowLayoutFullScreen(on);
+      const bars: Array<'status' | 'navigation'> = on ? [] : ['status', 'navigation'];
+      await win.setWindowSystemBarEnable(bars);
       this.fullscreen = on;
     } catch (e) {
       // 部分设备形态不支持全屏，忽略
@@ -504,14 +499,14 @@ export struct SessionPage {
             }
             .padding({ left: 10, right: 10, top: 6, bottom: 6 })
             .bindMenu(this.systemKeysMenu())
+            // 全屏切换：仅手机/平板；PC 会话窗口由 SessionAbility 统一全屏管理
+            this.toolButton(
+              this.fullscreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
+                              : $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
+              this.fullscreen ? '退出全屏' : '全屏', this.fullscreen, () => {
+                this.toggleFullscreen();
+              })
           }
-
-          this.toolButton(
-            this.fullscreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
-                            : $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
-            this.fullscreen ? '退出全屏' : '全屏', this.fullscreen, () => {
-              this.toggleFullscreen();
-            })
           this.toolButton($r('sys.symbol.xmark'), '断开', false, () => {
             this.leave('');
           })
