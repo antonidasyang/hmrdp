@@ -113,6 +113,11 @@ export struct SessionPage {
   private clipUpdateHandler: () => void = () => {
     this.onLocalClipboardChanged();
   };
+  // 物理键盘拦截（受限权限；失焦即释放，避免键盘被卡住）
+  private keyWin: window.Window | undefined = undefined;
+  private winEventCb: (t: window.WindowEventType) => void = (t: window.WindowEventType) => {
+    this.onWindowEvent(t);
+  };
 
   private clampOffsets(): void {
     // 缩放后允许平移的范围 = 溢出的一半
@@ -180,6 +185,37 @@ export struct SessionPage {
 
   private toggleFullscreen(): void {
     this.applyFullscreen(!this.fullscreen);
+  }
+
+  // ---- 物理键盘全局拦截（把含 Win 的全键盘转发远端；需受限权限，未授权自动降级）----
+
+  private async setupKeyInterception(): Promise<void> {
+    try {
+      this.keyWin = await window.getLastWindow(this.ctx());
+      this.keyWin.on('windowEvent', this.winEventCb);
+    } catch (e) {
+    }
+    hmrdp.setKeyInterception(true);
+  }
+
+  private teardownKeyInterception(): void {
+    hmrdp.setKeyInterception(false);
+    if (this.keyWin) {
+      try {
+        this.keyWin.off('windowEvent', this.winEventCb);
+      } catch (e) {
+      }
+      this.keyWin = undefined;
+    }
+  }
+
+  private onWindowEvent(type: window.WindowEventType): void {
+    // 失焦/隐藏即释放键盘（用鼠标点其它窗口即可脱离）；重新聚焦且仍连接则恢复拦截
+    if (type === window.WindowEventType.WINDOW_INACTIVE || type === window.WindowEventType.WINDOW_HIDDEN) {
+      hmrdp.setKeyInterception(false);
+    } else if (type === window.WindowEventType.WINDOW_ACTIVE && this.connected) {
+      hmrdp.setKeyInterception(true);
+    }
   }
 
   /** 按本台电脑勾选的目录解析共享盘（需权限，在主页启动时申请）；未选/未授权则不挂盘 */
@@ -412,6 +448,9 @@ export struct SessionPage {
       this.connected = true;
       this.errorText = '';
       this.setupClipboard();
+      if (this.isPc) {
+        this.setupKeyInterception(); // PC：抢占物理键盘全键盘直通（含 Win 键）
+      }
     } else if (state === STATE_DISCONNECTED) {
       this.connected = false;
       if (this.closing) {
@@ -652,6 +691,7 @@ export struct SessionPage {
         }
       }
       this.teardownClipboard();
+      this.teardownKeyInterception();
       this.releaseKeyboard();
       hmrdp.disconnect();
     })

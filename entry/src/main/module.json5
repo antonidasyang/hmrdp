@@ -38,6 +38,16 @@
           ],
           "when": "inuse"
         }
+      },
+      {
+        "name": "ohos.permission.INTERCEPT_INPUT_EVENT",
+        "reason": "$string:perm_intercept_reason",
+        "usedScene": {
+          "abilities": [
+            "SessionAbility"
+          ],
+          "when": "inuse"
+        }
       }
     ],
     "abilities": [

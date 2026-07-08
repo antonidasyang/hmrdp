@@ -27,6 +27,8 @@ target_link_libraries(hmrdp PUBLIC
     libhilog_ndk.z.so
     libnative_window.so
     libnative_buffer.so
+    # 物理键盘拦截（受限权限 INTERCEPT_INPUT_EVENT，见 OH_Input_AddKeyEventInterceptor）
+    libohinput.so
     # OHOS AVCodec（h264_ohos 硬解子系统符号）
     libnative_media_core.so
     libnative_media_codecbase.so

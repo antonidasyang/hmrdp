@@ -7,6 +7,9 @@
 
 #include "napi/native_api.h"
 #include <ace/xcomponent/native_interface_xcomponent.h>
+#include <multimodalinput/oh_input_manager.h>
+
+#include <atomic>
 
 #include <freerdp/version.h>
 
@@ -28,6 +31,7 @@ uint64_t g_surfaceH = 0;
 napi_threadsafe_function g_stateTsfn = nullptr;
 napi_threadsafe_function g_certTsfn = nullptr;
 napi_threadsafe_function g_clipTsfn = nullptr;
+std::atomic<bool> g_keyIntercepting{ false }; // 物理键盘拦截是否生效（受限权限）
 
 struct StateEvent {
     int32_t state;
@@ -79,6 +83,9 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
         napi_release_threadsafe_function(certTsfn, napi_tsfn_release);
     if (clipTsfn)
         napi_release_threadsafe_function(clipTsfn, napi_tsfn_release);
+    // 断开兜底：即便 ArkTS 漏调也要释放键盘拦截，避免键盘被卡住
+    if (state == SessionState::Disconnected && g_keyIntercepting.exchange(false))
+        OH_Input_RemoveKeyEventInterceptor();
     if (!tsfn)
         return;
     auto* event = new StateEvent{ static_cast<int32_t>(state), message ? message : "" };
@@ -253,6 +260,8 @@ void DispatchHoverEvent(OH_NativeXComponent* /*component*/, bool /*isHover*/) {}
 
 void DispatchKeyEvent(OH_NativeXComponent* component, void* /*window*/)
 {
+    if (g_keyIntercepting.load())
+        return; // 全局拦截器已接管物理键盘，避免与 XComponent 路径重复发送
     OH_NativeXComponent_KeyEvent* event = nullptr;
     if (OH_NativeXComponent_GetKeyEvent(component, &event) != 0 || !event)
         return;
@@ -616,6 +625,51 @@ napi_value SetClipboardText(napi_env env, napi_callback_info info)
     return undefined;
 }
 
+// ---- 物理键盘拦截（受限权限 INTERCEPT_INPUT_EVENT）----
+// 拦截器全局生效、消费按键；会话聚焦时开启，把含 Win 的全键盘转发远端，失焦/断开时关闭。
+void OnInterceptedKey(const Input_KeyEvent* keyEvent)
+{
+    if (!keyEvent)
+        return;
+    const int32_t action = OH_Input_GetKeyEventAction(keyEvent);
+    if (action != KEY_ACTION_DOWN && action != KEY_ACTION_UP)
+        return;
+    const int32_t code = OH_Input_GetKeyEventKeyCode(keyEvent);
+    uint16_t scancode = 0;
+    bool extended = false;
+    if (!hmrdp::OhosKeyToRdpScancode(static_cast<uint32_t>(code), scancode, extended))
+        return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_session)
+        g_session->SendScancode(scancode, extended, action == KEY_ACTION_DOWN);
+}
+
+// setKeyInterception(enable) — 返回是否处于拦截态（无受限权限时恒 false，自动降级）
+napi_value SetKeyInterception(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool enable = false;
+    if (argc >= 1)
+        napi_get_value_bool(env, args[0], &enable);
+
+    if (enable && !g_keyIntercepting.load()) {
+        const Input_Result rc = OH_Input_AddKeyEventInterceptor(OnInterceptedKey, nullptr);
+        if (rc == INPUT_SUCCESS)
+            g_keyIntercepting.store(true);
+        else
+            HMLOGW("键盘拦截未启用(rc=%{public}d；多为未获 INTERCEPT_INPUT_EVENT 受限权限)", rc);
+    } else if (!enable && g_keyIntercepting.load()) {
+        OH_Input_RemoveKeyEventInterceptor();
+        g_keyIntercepting.store(false);
+    }
+
+    napi_value result = nullptr;
+    napi_get_boolean(env, g_keyIntercepting.load(), &result);
+    return result;
+}
+
 void RegisterXComponent(napi_env env, napi_value exports)
 {
     napi_value exportInstance = nullptr;
@@ -643,6 +697,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "setTouchMode", nullptr, SetTouchMode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setKeyInterception", nullptr, SetKeyInterception, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     RegisterXComponent(env, exports);

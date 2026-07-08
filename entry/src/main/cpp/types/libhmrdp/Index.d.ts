@@ -38,6 +38,9 @@ export const disconnect: () => void;
 export const requestResize: (width: number, height: number) => void;
 /** 本地剪贴板文本变更时调用，向远端广告文本格式 */
 export const setClipboardText: (text: string) => void;
+/** 开/关物理键盘全局拦截（把含 Win 的全键盘转发远端）。返回是否处于拦截态；
+ *  需受限权限 INTERCEPT_INPUT_EVENT，未授权时恒 false（自动降级到系统键菜单/普通按键）。 */
+export const setKeyInterception: (enable: boolean) => boolean;
 /** 应答证书确认：0=拒绝 1=永久接受 2=仅本次接受 */
 export const respondCert: (decision: number) => void;
 /** 缩放/平移手势进行中时置 true，暂停触摸转鼠标，避免手势与点击互相干扰 */
