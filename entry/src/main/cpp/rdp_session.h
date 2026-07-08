@@ -12,6 +12,7 @@
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
 #include <freerdp/client/disp.h>
+#include <freerdp/client/cliprdr.h>
 #include <native_window/external_window.h>
 
 namespace hmrdp {
@@ -33,6 +34,8 @@ struct SessionConfig {
     uint32_t height = 0;
     uint32_t scale = 100; // DesktopScaleFactor 百分比 [100,500]
     bool dynamicResolution = false; // true: 启用 disp 显示控制，远端分辨率跟随本机窗口
+    std::string driveName;          // 磁盘重定向：远端显示名（空=不重定向）
+    std::string drivePath;          // 磁盘重定向：本地目录绝对路径
 };
 
 // 状态回调：由 RDP 线程调用，实现方负责线程安全（NAPI 侧用 TSFN）
@@ -50,10 +53,16 @@ struct CertInfo {
 };
 using CertCallback = void (*)(const CertInfo& info, void* userData);
 
+// 远端剪贴板文本 -> ArkTS（RDP 线程调用，实现方负责线程安全）
+using ClipCallback = void (*)(const char* utf8Text, void* userData);
+
 class RdpSession {
 public:
     RdpSession(SessionConfig config, StateCallback cb, void* cbUserData);
     void SetCertCallback(CertCallback cb, void* userData);
+    void SetClipCallback(ClipCallback cb, void* userData);
+    // ArkTS：本地剪贴板文本变更时调用（任意线程），触发向远端广告文本格式
+    void SetLocalClipboardText(const char* utf8Text);
     ~RdpSession();
 
     RdpSession(const RdpSession&) = delete;
@@ -103,6 +112,14 @@ public:
     uint32_t RequestCertDecision(const CertInfo& info);
     // 任意线程调用：投递用户决策
     void ProvideCertDecision(int32_t decision);
+    // cliprdr 剪贴板通道就绪/断开（RDP 线程，通道连接事件）
+    void OnCliprdrConnected(CliprdrClientContext* cliprdr);
+    void OnCliprdrDisconnected();
+    // 以下供 cliprdr 静态回调使用（均在 RDP 线程）
+    void SendClipboardFormatList();                       // 向远端广告本地格式
+    bool CopyLocalClipboardUtf8(std::string& out);        // 取本地剪贴板文本（UTF-8）
+    void DeliverRemoteClipboard(const std::string& utf8); // 远端文本 -> ArkTS
+    CliprdrClientContext* Cliprdr() const { return cliprdr_; }
     const SessionConfig& Config() const { return config_; }
     freerdp* Instance() const { return instance_; }
 
@@ -124,7 +141,8 @@ private:
     void PushInput(const InputEvent& event);
     void DrainInput();
     bool MapToDesktop(float sx, float sy, uint16_t& dx, uint16_t& dy);
-    void SendResizeIfPending(); // RDP 线程：有待定尺寸则经 disp 下发布局
+    void SendResizeIfPending();         // RDP 线程：有待定尺寸则经 disp 下发布局
+    void AdvertiseClipboardIfPending(); // RDP 线程：本地剪贴板有更新则广告格式
 
     SessionConfig config_;
     StateCallback stateCb_;
@@ -152,6 +170,15 @@ private:
     std::atomic<uint32_t> pendingH_{ 0 };
     std::atomic<bool> resizePending_{ false };
     uint32_t layoutScale_ = 100;
+
+    // cliprdr 剪贴板（cliprdr_ 仅 RDP 线程访问）
+    CliprdrClientContext* cliprdr_ = nullptr;
+    std::mutex clipMutex_;
+    std::string localClipUtf8_;
+    bool haveLocalClip_ = false;
+    std::atomic<bool> advertisePending_{ false };
+    ClipCallback clipCb_ = nullptr;
+    void* clipCbUserData_ = nullptr;
 
     // 脏区累积（仅 RDP 线程访问）
     bool presentPending_ = false;

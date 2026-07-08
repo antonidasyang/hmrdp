@@ -1,6 +1,8 @@
 import { display, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { common } from '@kit.AbilityKit';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { fileIo } from '@kit.CoreFileKit';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
@@ -69,6 +71,8 @@ interface HmConnectConfig {
   height: number;
   scale: number;
   dynamic: number;
+  drivePath: string;
+  driveName: string;
 }
 
 const STATE_CONNECTING = 0;
@@ -98,6 +102,13 @@ export struct SessionPage {
   private params: SessionParams = new SessionParams();
   private closing: boolean = false;
   private imeAttached: boolean = false;
+  // 剪贴板同步（防回环：两端最近一次同步的文本）
+  private clipLast: string = '';
+  private clipListening: boolean = false;
+  private clipSelfWrite: boolean = false; // 刚由远端写入本地，跳过下一次读取回声
+  private clipUpdateHandler: () => void = () => {
+    this.onLocalClipboardChanged();
+  };
 
   private clampOffsets(): void {
     // 缩放后允许平移的范围 = 溢出的一半
@@ -138,6 +149,80 @@ export struct SessionPage {
 
   private toggleFullscreen(): void {
     this.applyFullscreen(!this.fullscreen);
+  }
+
+  /** 磁盘重定向的本地目录（应用沙箱内 shared 子目录） */
+  private ensureSharedDir(): string {
+    const dir = `${this.ctx().filesDir}/shared`;
+    try {
+      fileIo.mkdirSync(dir);
+    } catch (e) {
+      // 已存在则忽略
+    }
+    return dir;
+  }
+
+  // ---- 共享剪贴板（cliprdr 桥接系统剪贴板）----
+
+  private setupClipboard(): void {
+    if (this.clipListening) {
+      return;
+    }
+    try {
+      pasteboard.getSystemPasteboard().on('update', this.clipUpdateHandler);
+      this.clipListening = true;
+      this.onLocalClipboardChanged(); // 连接后先把当前本地剪贴板推给远端
+    } catch (e) {
+      // 忽略：剪贴板不可用时功能降级
+    }
+  }
+
+  private teardownClipboard(): void {
+    if (!this.clipListening) {
+      return;
+    }
+    try {
+      pasteboard.getSystemPasteboard().off('update', this.clipUpdateHandler);
+    } catch (e) {
+    }
+    this.clipListening = false;
+  }
+
+  /** 本地剪贴板变更 -> 广告给远端 */
+  private onLocalClipboardChanged(): void {
+    if (this.clipSelfWrite) {
+      this.clipSelfWrite = false; // 本次 update 由远端写入触发，跳过读取避免回声与多余提示
+      return;
+    }
+    try {
+      pasteboard.getSystemPasteboard().getData().then((data: pasteboard.PasteData) => {
+        const text = data.getPrimaryText();
+        if (!text || text === this.clipLast) {
+          return;
+        }
+        this.clipLast = text;
+        hmrdp.setClipboardText(text);
+      }).catch(() => {
+      });
+    } catch (e) {
+    }
+  }
+
+  /** 远端剪贴板文本 -> 写入本地系统剪贴板 */
+  private onClipFromRemote(text: string): void {
+    if (!text || text === this.clipLast) {
+      return;
+    }
+    this.clipLast = text;
+    this.clipSelfWrite = true;
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+      pasteboard.getSystemPasteboard().setData(data).catch(() => {
+        this.clipSelfWrite = false;
+      });
+    } catch (e) {
+      this.clipSelfWrite = false;
+    }
   }
 
   private onCertRequest(request: HmCertRequest): void {
@@ -245,7 +330,9 @@ export struct SessionPage {
       width: dynamic ? 0 : this.params.width,
       height: dynamic ? 0 : this.params.height,
       scale: scale,
-      dynamic: dynamic ? 1 : 0
+      dynamic: dynamic ? 1 : 0,
+      drivePath: this.ensureSharedDir(), // 磁盘重定向：本地 shared 目录挂成远端网络盘
+      driveName: 'HMRDP'
     };
     this.errorText = '';
     this.statusText = '正在连接…';
@@ -254,6 +341,8 @@ export struct SessionPage {
       this.onSessionState(state, message);
     }, (request: HmCertRequest) => {
       this.onCertRequest(request);
+    }, (text: string) => {
+      this.onClipFromRemote(text);
     });
     if (!ok) {
       this.errorText = '无法启动会话（可能已有连接未结束）';
@@ -266,6 +355,7 @@ export struct SessionPage {
     } else if (state === STATE_CONNECTED) {
       this.connected = true;
       this.errorText = '';
+      this.setupClipboard();
     } else if (state === STATE_DISCONNECTED) {
       this.connected = false;
       if (this.closing) {
@@ -476,6 +566,7 @@ export struct SessionPage {
       if (this.fullscreen) {
         this.applyFullscreen(false); // 退出时恢复系统栏
       }
+      this.teardownClipboard();
       this.releaseKeyboard();
       hmrdp.disconnect();
     })

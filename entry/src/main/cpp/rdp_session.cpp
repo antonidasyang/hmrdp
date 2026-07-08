@@ -12,12 +12,20 @@
 #include <freerdp/error.h>
 #include <freerdp/event.h>
 #include <freerdp/client/channels.h>
+#include <freerdp/client/cmdline.h>
+#include <freerdp/client/cliprdr.h>
 #include <freerdp/channels/disp.h>
+#include <freerdp/channels/cliprdr.h>
 #include <winpr/synch.h>
 #include <winpr/wlog.h>
+#include <winpr/string.h>
+#include <winpr/user.h>
+#include <winpr/wtsapi.h>
 #include <native_buffer/native_buffer.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <vector>
 
 #include "hm_log.h"
 
@@ -66,18 +74,141 @@ BOOL HmDesktopResize(rdpContext* context)
     return TRUE;
 }
 
-// 额外订阅（与 FreeRDP 通用处理并存）：捕获 disp 显示控制通道上下文
+// ---- 剪贴板：UTF-8 <-> CF_UNICODETEXT(UTF-16LE) ----
+
+std::vector<uint8_t> Utf8ToCfUnicode(const std::string& utf8)
+{
+    std::vector<uint8_t> out;
+    if (utf8.empty())
+        return out;
+    size_t sz = 0;
+    WCHAR* w = ConvertUtf8ToWCharAlloc(utf8.c_str(), &sz);
+    if (!w)
+        return out;
+    size_t units = 0;
+    while (w[units] != 0)
+        units++;
+    const size_t bytes = (units + 1) * sizeof(WCHAR); // 含结尾 NUL
+    out.resize(bytes);
+    memcpy(out.data(), w, bytes);
+    free(w);
+    return out;
+}
+
+std::string CfUnicodeToUtf8(const BYTE* data, size_t size)
+{
+    if (!data || size < sizeof(WCHAR))
+        return std::string();
+    const WCHAR* w = reinterpret_cast<const WCHAR*>(data);
+    size_t units = size / sizeof(WCHAR);
+    while (units > 0 && w[units - 1] == 0) // 去尾部 NUL
+        units--;
+    if (units == 0)
+        return std::string();
+    size_t outLen = 0;
+    char* u8 = ConvertWCharNToUtf8Alloc(w, units, &outLen);
+    std::string s = u8 ? std::string(u8, outLen) : std::string();
+    if (u8)
+        free(u8);
+    return s;
+}
+
+// ---- cliprdr 静态回调（均在 RDP 线程；session 经 context->custom 获取）----
+
+UINT HmCliprdrMonitorReady(CliprdrClientContext* context, const CLIPRDR_MONITOR_READY* /*ready*/)
+{
+    CLIPRDR_GENERAL_CAPABILITY_SET general = {};
+    general.capabilitySetType = CB_CAPSTYPE_GENERAL;
+    general.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
+    general.version = CB_CAPS_VERSION_2;
+    general.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+    CLIPRDR_CAPABILITIES caps = {};
+    caps.cCapabilitiesSets = 1;
+    caps.capabilitySets = reinterpret_cast<CLIPRDR_CAPABILITY_SET*>(&general);
+    context->ClientCapabilities(context, &caps);
+    reinterpret_cast<RdpSession*>(context->custom)->SendClipboardFormatList();
+    return CHANNEL_RC_OK;
+}
+
+UINT HmCliprdrServerCapabilities(CliprdrClientContext* /*context*/,
+                                 const CLIPRDR_CAPABILITIES* /*caps*/)
+{
+    return CHANNEL_RC_OK;
+}
+
+UINT HmCliprdrServerFormatList(CliprdrClientContext* context, const CLIPRDR_FORMAT_LIST* list)
+{
+    CLIPRDR_FORMAT_LIST_RESPONSE resp = {};
+    resp.common.msgFlags = CB_RESPONSE_OK;
+    context->ClientFormatListResponse(context, &resp);
+    // 服务端有文本 -> 请求 CF_UNICODETEXT
+    bool hasText = false;
+    for (UINT32 i = 0; i < list->numFormats; i++) {
+        const UINT32 id = list->formats[i].formatId;
+        if (id == CF_UNICODETEXT || id == CF_TEXT || id == CF_OEMTEXT) {
+            hasText = true;
+            break;
+        }
+    }
+    if (hasText) {
+        CLIPRDR_FORMAT_DATA_REQUEST req = {};
+        req.requestedFormatId = CF_UNICODETEXT;
+        context->ClientFormatDataRequest(context, &req);
+    }
+    return CHANNEL_RC_OK;
+}
+
+UINT HmCliprdrServerFormatDataRequest(CliprdrClientContext* context,
+                                      const CLIPRDR_FORMAT_DATA_REQUEST* req)
+{
+    RdpSession* session = reinterpret_cast<RdpSession*>(context->custom);
+    std::vector<uint8_t> bytes;
+    if (req->requestedFormatId == CF_UNICODETEXT) {
+        std::string u8;
+        if (session->CopyLocalClipboardUtf8(u8))
+            bytes = Utf8ToCfUnicode(u8);
+    }
+    CLIPRDR_FORMAT_DATA_RESPONSE resp = {};
+    if (!bytes.empty()) {
+        resp.common.msgFlags = CB_RESPONSE_OK;
+        resp.common.dataLen = static_cast<UINT32>(bytes.size());
+        resp.requestedFormatData = bytes.data();
+    } else {
+        resp.common.msgFlags = CB_RESPONSE_FAIL;
+    }
+    return context->ClientFormatDataResponse(context, &resp);
+}
+
+UINT HmCliprdrServerFormatDataResponse(CliprdrClientContext* context,
+                                       const CLIPRDR_FORMAT_DATA_RESPONSE* resp)
+{
+    RdpSession* session = reinterpret_cast<RdpSession*>(context->custom);
+    if ((resp->common.msgFlags & CB_RESPONSE_OK) && resp->requestedFormatData &&
+        resp->common.dataLen >= sizeof(WCHAR)) {
+        const std::string u8 = CfUnicodeToUtf8(resp->requestedFormatData, resp->common.dataLen);
+        if (!u8.empty())
+            session->DeliverRemoteClipboard(u8);
+    }
+    return CHANNEL_RC_OK;
+}
+
+// 额外订阅（与 FreeRDP 通用处理并存）：捕获 disp / cliprdr 通道上下文
 void HmOnChannelConnected(void* context, const ChannelConnectedEventArgs* e)
 {
+    RdpSession* session = SessionOf(reinterpret_cast<rdpContext*>(context));
     if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
-        SessionOf(reinterpret_cast<rdpContext*>(context))
-            ->OnDispConnected(reinterpret_cast<DispClientContext*>(e->pInterface));
+        session->OnDispConnected(reinterpret_cast<DispClientContext*>(e->pInterface));
+    else if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0)
+        session->OnCliprdrConnected(reinterpret_cast<CliprdrClientContext*>(e->pInterface));
 }
 
 void HmOnChannelDisconnected(void* context, const ChannelDisconnectedEventArgs* e)
 {
+    RdpSession* session = SessionOf(reinterpret_cast<rdpContext*>(context));
     if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
-        SessionOf(reinterpret_cast<rdpContext*>(context))->OnDispConnected(nullptr);
+        session->OnDispConnected(nullptr);
+    else if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0)
+        session->OnCliprdrDisconnected();
 }
 
 BOOL HmPreConnect(freerdp* instance)
@@ -288,6 +419,21 @@ bool RdpSession::ApplySettings()
     if (config_.dynamicResolution)
         ok = ok && freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, TRUE);
 
+    // 共享剪贴板：注册 cliprdr 静态通道（协议侧由 FreeRDP 处理，本地整合见回调）
+    {
+        const char* clip_argv[] = { "cliprdr" };
+        if (!freerdp_client_add_static_channel(settings, 1, clip_argv))
+            HMLOGW("注册 cliprdr 通道失败");
+    }
+
+    // 磁盘重定向：把本地目录挂成远端网络盘（rdpdr + drive addin 负责文件 I/O）
+    if (!config_.drivePath.empty()) {
+        const char* name = config_.driveName.empty() ? "HMRDP" : config_.driveName.c_str();
+        const char* drive_argv[] = { "drive", name, config_.drivePath.c_str() };
+        if (!freerdp_client_add_device_channel(settings, 3, drive_argv))
+            HMLOGW("注册磁盘重定向失败: %{public}s", config_.drivePath.c_str());
+    }
+
     // 经典编解码回退（GFX 未协商时）
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, TRUE);
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_NSCodec, TRUE);
@@ -380,6 +526,7 @@ void RdpSession::ThreadMain()
             break;
         DrainInput();
         SendResizeIfPending();
+        AdvertiseClipboardIfPending();
         if (!freerdp_check_event_handles(context_)) {
             if (freerdp_get_last_error(context_) == FREERDP_ERROR_SUCCESS)
                 HMLOGW("会话事件处理失败，断开");
@@ -482,6 +629,84 @@ void RdpSession::SendResizeIfPending()
         HMLOGW("disp SendMonitorLayout 失败: %{public}u", rc);
     else
         HMLOGI("disp 请求远端分辨率 %{public}ux%{public}u", w, h);
+}
+
+// ---- 共享剪贴板（cliprdr）----
+
+void RdpSession::SetClipCallback(ClipCallback cb, void* userData)
+{
+    clipCb_ = cb;
+    clipCbUserData_ = userData;
+}
+
+void RdpSession::SetLocalClipboardText(const char* utf8Text)
+{
+    {
+        std::lock_guard<std::mutex> lock(clipMutex_);
+        localClipUtf8_ = utf8Text ? utf8Text : "";
+        haveLocalClip_ = !localClipUtf8_.empty();
+    }
+    advertisePending_.store(true);
+    if (inputSignal_)
+        SetEvent(inputSignal_); // 唤醒事件循环，在 RDP 线程内广告
+}
+
+void RdpSession::OnCliprdrConnected(CliprdrClientContext* cliprdr)
+{
+    cliprdr_ = cliprdr; // 仅 RDP 线程访问
+    if (!cliprdr_)
+        return;
+    cliprdr_->custom = this;
+    cliprdr_->MonitorReady = HmCliprdrMonitorReady;
+    cliprdr_->ServerCapabilities = HmCliprdrServerCapabilities;
+    cliprdr_->ServerFormatList = HmCliprdrServerFormatList;
+    cliprdr_->ServerFormatDataRequest = HmCliprdrServerFormatDataRequest;
+    cliprdr_->ServerFormatDataResponse = HmCliprdrServerFormatDataResponse;
+}
+
+void RdpSession::OnCliprdrDisconnected()
+{
+    cliprdr_ = nullptr;
+}
+
+void RdpSession::SendClipboardFormatList()
+{
+    if (!cliprdr_ || !cliprdr_->ClientFormatList)
+        return;
+    bool have = false;
+    {
+        std::lock_guard<std::mutex> lock(clipMutex_);
+        have = haveLocalClip_;
+    }
+    CLIPRDR_FORMAT fmt = {};
+    fmt.formatId = CF_UNICODETEXT;
+    fmt.formatName = nullptr;
+    CLIPRDR_FORMAT_LIST list = {};
+    list.numFormats = have ? 1u : 0u;
+    list.formats = have ? &fmt : nullptr;
+    cliprdr_->ClientFormatList(cliprdr_, &list);
+}
+
+bool RdpSession::CopyLocalClipboardUtf8(std::string& out)
+{
+    std::lock_guard<std::mutex> lock(clipMutex_);
+    if (!haveLocalClip_)
+        return false;
+    out = localClipUtf8_;
+    return true;
+}
+
+void RdpSession::DeliverRemoteClipboard(const std::string& utf8)
+{
+    if (clipCb_)
+        clipCb_(utf8.c_str(), clipCbUserData_);
+}
+
+void RdpSession::AdvertiseClipboardIfPending()
+{
+    if (!advertisePending_.exchange(false))
+        return;
+    SendClipboardFormatList();
 }
 
 // ---- 输入注入 ----

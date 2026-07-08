@@ -27,6 +27,7 @@ uint64_t g_surfaceW = 0;
 uint64_t g_surfaceH = 0;
 napi_threadsafe_function g_stateTsfn = nullptr;
 napi_threadsafe_function g_certTsfn = nullptr;
+napi_threadsafe_function g_clipTsfn = nullptr;
 
 struct StateEvent {
     int32_t state;
@@ -62,6 +63,7 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
 {
     napi_threadsafe_function tsfn = nullptr;
     napi_threadsafe_function certTsfn = nullptr;
+    napi_threadsafe_function clipTsfn = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         tsfn = g_stateTsfn;
@@ -69,10 +71,14 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
             g_stateTsfn = nullptr;
             certTsfn = g_certTsfn;
             g_certTsfn = nullptr;
+            clipTsfn = g_clipTsfn;
+            g_clipTsfn = nullptr;
         }
     }
     if (certTsfn)
         napi_release_threadsafe_function(certTsfn, napi_tsfn_release);
+    if (clipTsfn)
+        napi_release_threadsafe_function(clipTsfn, napi_tsfn_release);
     if (!tsfn)
         return;
     auto* event = new StateEvent{ static_cast<int32_t>(state), message ? message : "" };
@@ -133,6 +139,35 @@ void OnCertRequest(const hmrdp::CertInfo& info, void* /*userData*/)
                                  info.changed };
     if (napi_call_threadsafe_function(tsfn, event, napi_tsfn_blocking) != napi_ok)
         delete event;
+}
+
+// ---- TSFN: 远端剪贴板文本 -> ArkTS ----
+
+void CallJsClipCallback(napi_env env, napi_value jsCallback, void* /*context*/, void* data)
+{
+    std::unique_ptr<std::string> text(static_cast<std::string*>(data));
+    if (!env || !jsCallback || !text)
+        return;
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    napi_value arg = nullptr;
+    napi_create_string_utf8(env, text->c_str(), NAPI_AUTO_LENGTH, &arg);
+    napi_value args[1] = { arg };
+    napi_call_function(env, undefined, jsCallback, 1, args, nullptr);
+}
+
+void OnClipboardText(const char* utf8Text, void* /*userData*/)
+{
+    napi_threadsafe_function tsfn = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        tsfn = g_clipTsfn;
+    }
+    if (!tsfn)
+        return;
+    auto* text = new std::string(utf8Text ? utf8Text : "");
+    if (napi_call_threadsafe_function(tsfn, text, napi_tsfn_blocking) != napi_ok)
+        delete text;
 }
 
 // ---- XComponent 回调（UI 线程）----
@@ -293,13 +328,13 @@ napi_value GetVersion(napi_env env, napi_callback_info /*info*/)
 
 napi_value Connect(napi_env env, napi_callback_info info)
 {
-    size_t argc = 3;
-    napi_value args[3] = {};
+    size_t argc = 4;
+    napi_value args[4] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     napi_value result = nullptr;
     if (argc < 3) {
-        napi_throw_error(env, nullptr, "connect(config, onState, onCert) 需要 3 个参数");
+        napi_throw_error(env, nullptr, "connect(config, onState, onCert[, onClip]) 需要至少 3 个参数");
         return result;
     }
 
@@ -313,6 +348,8 @@ napi_value Connect(napi_env env, napi_callback_info info)
     config.height = GetUint32Prop(env, args[0], "height", 0);
     config.scale = GetUint32Prop(env, args[0], "scale", 100);
     config.dynamicResolution = GetUint32Prop(env, args[0], "dynamic", 0) != 0;
+    config.drivePath = GetStringProp(env, args[0], "drivePath");
+    config.driveName = GetStringProp(env, args[0], "driveName", "HMRDP");
 
     if (config.host.empty()) {
         napi_throw_error(env, nullptr, "host 不能为空");
@@ -324,6 +361,7 @@ napi_value Connect(napi_env env, napi_callback_info info)
     std::unique_ptr<RdpSession> oldSession;
     napi_threadsafe_function oldState = nullptr;
     napi_threadsafe_function oldCert = nullptr;
+    napi_threadsafe_function oldClip = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_session && g_session->IsRunning()) {
@@ -333,8 +371,10 @@ napi_value Connect(napi_env env, napi_callback_info info)
         oldSession = std::move(g_session);
         oldState = g_stateTsfn;
         oldCert = g_certTsfn;
+        oldClip = g_clipTsfn;
         g_stateTsfn = nullptr;
         g_certTsfn = nullptr;
+        g_clipTsfn = nullptr;
     }
     if (oldSession) {
         oldSession->RequestStop();
@@ -345,6 +385,8 @@ napi_value Connect(napi_env env, napi_callback_info info)
         napi_release_threadsafe_function(oldState, napi_tsfn_release);
     if (oldCert)
         napi_release_threadsafe_function(oldCert, napi_tsfn_release);
+    if (oldClip)
+        napi_release_threadsafe_function(oldClip, napi_tsfn_release);
 
     std::lock_guard<std::mutex> lock(g_mutex);
 
@@ -363,9 +405,22 @@ napi_value Connect(napi_env env, napi_callback_info info)
         napi_throw_error(env, nullptr, "创建证书回调失败");
         return result;
     }
+    // 剪贴板回调（可选第 4 参）：失败仅降级剪贴板，不影响连接
+    if (argc >= 4) {
+        napi_valuetype vt = napi_undefined;
+        napi_typeof(env, args[3], &vt);
+        if (vt == napi_function) {
+            napi_create_string_utf8(env, "hmrdpClip", NAPI_AUTO_LENGTH, &resourceName);
+            if (napi_create_threadsafe_function(env, args[3], nullptr, resourceName, 0, 1, nullptr,
+                                                nullptr, nullptr, CallJsClipCallback,
+                                                &g_clipTsfn) != napi_ok)
+                g_clipTsfn = nullptr;
+        }
+    }
 
     g_session = std::make_unique<RdpSession>(std::move(config), OnSessionState, nullptr);
     g_session->SetCertCallback(OnCertRequest, nullptr);
+    g_session->SetClipCallback(OnClipboardText, nullptr);
     if (g_window)
         g_session->AttachWindow(g_window, g_surfaceW, g_surfaceH);
 
@@ -376,6 +431,10 @@ napi_value Connect(napi_env env, napi_callback_info info)
         g_stateTsfn = nullptr;
         napi_release_threadsafe_function(g_certTsfn, napi_tsfn_release);
         g_certTsfn = nullptr;
+        if (g_clipTsfn) {
+            napi_release_threadsafe_function(g_clipTsfn, napi_tsfn_release);
+            g_clipTsfn = nullptr;
+        }
     }
     napi_get_boolean(env, ok, &result);
     return result;
@@ -513,6 +572,30 @@ napi_value RequestResize(napi_env env, napi_callback_info info)
     return undefined;
 }
 
+// setClipboardText(text: string) — 本地剪贴板文本变更，向远端广告
+napi_value SetClipboardText(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::string text;
+    if (argc >= 1) {
+        size_t len = 0;
+        if (napi_get_value_string_utf8(env, args[0], nullptr, 0, &len) == napi_ok) {
+            text.resize(len);
+            napi_get_value_string_utf8(env, args[0], text.data(), len + 1, &len);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_session)
+            g_session->SetLocalClipboardText(text.c_str());
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 void RegisterXComponent(napi_env env, napi_value exports)
 {
     napi_value exportInstance = nullptr;
@@ -539,6 +622,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "setGestureActive", nullptr, SetGestureActive, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setTouchMode", nullptr, SetTouchMode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     RegisterXComponent(env, exports);
