@@ -427,11 +427,13 @@ bool RdpSession::ApplySettings()
     }
 
     // 磁盘重定向：把本地目录挂成远端网络盘（rdpdr + drive addin 负责文件 I/O）
-    if (!config_.drivePath.empty()) {
-        const char* name = config_.driveName.empty() ? "HMRDP" : config_.driveName.c_str();
-        const char* drive_argv[] = { "drive", name, config_.drivePath.c_str() };
+    for (const SessionConfig::DriveMount& d : config_.drives) {
+        if (d.path.empty())
+            continue;
+        const char* name = d.name.empty() ? "HMRDP" : d.name.c_str();
+        const char* drive_argv[] = { "drive", name, d.path.c_str() };
         if (!freerdp_client_add_device_channel(settings, 3, drive_argv))
-            HMLOGW("注册磁盘重定向失败: %{public}s", config_.drivePath.c_str());
+            HMLOGW("注册磁盘重定向失败: %{public}s", d.path.c_str());
     }
 
     // 经典编解码回退（GFX 未协商时）

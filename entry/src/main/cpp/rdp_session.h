@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
@@ -34,8 +35,11 @@ struct SessionConfig {
     uint32_t height = 0;
     uint32_t scale = 100; // DesktopScaleFactor 百分比 [100,500]
     bool dynamicResolution = false; // true: 启用 disp 显示控制，远端分辨率跟随本机窗口
-    std::string driveName;          // 磁盘重定向：远端显示名（空=不重定向）
-    std::string drivePath;          // 磁盘重定向：本地目录绝对路径
+    struct DriveMount {
+        std::string name; // 远端盘显示名
+        std::string path; // 本地目录绝对路径
+    };
+    std::vector<DriveMount> drives; // 磁盘重定向：多个本地目录挂成远端网络盘
 };
 
 // 状态回调：由 RDP 线程调用，实现方负责线程安全（NAPI 侧用 TSFN）

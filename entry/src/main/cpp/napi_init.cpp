@@ -348,8 +348,28 @@ napi_value Connect(napi_env env, napi_callback_info info)
     config.height = GetUint32Prop(env, args[0], "height", 0);
     config.scale = GetUint32Prop(env, args[0], "scale", 100);
     config.dynamicResolution = GetUint32Prop(env, args[0], "dynamic", 0) != 0;
-    config.drivePath = GetStringProp(env, args[0], "drivePath");
-    config.driveName = GetStringProp(env, args[0], "driveName", "HMRDP");
+    // drives: Array<{ name: string, path: string }>
+    napi_value drivesVal = nullptr;
+    bool hasDrives = false;
+    napi_has_named_property(env, args[0], "drives", &hasDrives);
+    if (hasDrives && napi_get_named_property(env, args[0], "drives", &drivesVal) == napi_ok) {
+        bool isArray = false;
+        napi_is_array(env, drivesVal, &isArray);
+        if (isArray) {
+            uint32_t len = 0;
+            napi_get_array_length(env, drivesVal, &len);
+            for (uint32_t i = 0; i < len; i++) {
+                napi_value el = nullptr;
+                if (napi_get_element(env, drivesVal, i, &el) != napi_ok)
+                    continue;
+                SessionConfig::DriveMount dm;
+                dm.name = GetStringProp(env, el, "name", "HMRDP");
+                dm.path = GetStringProp(env, el, "path");
+                if (!dm.path.empty())
+                    config.drives.push_back(dm);
+            }
+        }
+    }
 
     if (config.host.empty()) {
         napi_throw_error(env, nullptr, "host 不能为空");

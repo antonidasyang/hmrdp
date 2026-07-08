@@ -1,5 +1,5 @@
 import { SymbolGlyphModifier } from '@kit.ArkUI';
-import { common } from '@kit.AbilityKit';
+import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
 import { EditPCPage, EditPCParams } from './EditPCPage';
 import { SessionPage } from './SessionPage';
 import { AboutPage } from './AboutPage';
@@ -40,6 +40,23 @@ struct Index {
   aboutToAppear(): void {
     this.coreVersion = hmrdp.getVersion();
     this.reload();
+    this.requestFilePermissions();
+  }
+
+  /** 申请「下载/文档」目录读写权限，用于会话内把这两个目录共享给远程电脑做文件互传 */
+  private requestFilePermissions(): void {
+    const perms: Permissions[] = [
+      'ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY',
+      'ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY'
+    ];
+    try {
+      abilityAccessCtrl.createAtManager()
+        .requestPermissionsFromUser(this.ctx() as common.UIAbilityContext, perms)
+        .catch(() => {
+        });
+    } catch (e) {
+      // 忽略：拒绝则磁盘重定向回退到应用沙箱目录
+    }
   }
 
   reload(): void {

@@ -2,7 +2,7 @@ import { display, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
-import { fileIo } from '@kit.CoreFileKit';
+import { fileIo, Environment } from '@kit.CoreFileKit';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
@@ -71,8 +71,12 @@ interface HmConnectConfig {
   height: number;
   scale: number;
   dynamic: number;
-  drivePath: string;
-  driveName: string;
+  drives: HmDriveEntry[];
+}
+
+interface HmDriveEntry {
+  name: string;
+  path: string;
 }
 
 const STATE_CONNECTING = 0;
@@ -151,7 +155,7 @@ export struct SessionPage {
     this.applyFullscreen(!this.fullscreen);
   }
 
-  /** 磁盘重定向的本地目录（应用沙箱内 shared 子目录） */
+  /** 磁盘重定向兜底目录（应用沙箱内 shared 子目录，文件管理里不可见） */
   private ensureSharedDir(): string {
     const dir = `${this.ctx().filesDir}/shared`;
     try {
@@ -160,6 +164,30 @@ export struct SessionPage {
       // 已存在则忽略
     }
     return dir;
+  }
+
+  /** 优先共享用户「下载/文档」目录（需权限，在主页启动时申请）；未授权则回退沙箱 */
+  private resolveShareDrives(): HmDriveEntry[] {
+    const drives: HmDriveEntry[] = [];
+    try {
+      const dl = Environment.getUserDownloadDir();
+      if (dl && dl.length > 0) {
+        drives.push({ name: '下载', path: dl });
+      }
+    } catch (e) {
+      // 未授权：getUserDownloadDir 抛异常，跳过
+    }
+    try {
+      const doc = Environment.getUserDocumentDir();
+      if (doc && doc.length > 0) {
+        drives.push({ name: '文档', path: doc });
+      }
+    } catch (e) {
+    }
+    if (drives.length === 0) {
+      drives.push({ name: 'HMRDP', path: this.ensureSharedDir() });
+    }
+    return drives;
   }
 
   // ---- 共享剪贴板（cliprdr 桥接系统剪贴板）----
@@ -331,8 +359,7 @@ export struct SessionPage {
       height: dynamic ? 0 : this.params.height,
       scale: scale,
       dynamic: dynamic ? 1 : 0,
-      drivePath: this.ensureSharedDir(), // 磁盘重定向：本地 shared 目录挂成远端网络盘
-      driveName: 'HMRDP'
+      drives: this.resolveShareDrives() // 磁盘重定向：下载/文档目录挂成远端网络盘
     };
     this.errorText = '';
     this.statusText = '正在连接…';

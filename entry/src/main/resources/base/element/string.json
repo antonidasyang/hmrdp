@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "HMRDP"
+    },
+    {
+      "name": "perm_files_reason",
+      "value": "用于把下载/文档目录共享给远程电脑，实现文件互传"
     }
   ]
 }

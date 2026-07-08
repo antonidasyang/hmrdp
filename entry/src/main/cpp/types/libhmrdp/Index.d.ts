@@ -11,10 +11,8 @@ export interface ConnectConfig {
   scale?: number;
   /** 1 = 启用动态分辨率（disp 通道，远端跟随本机窗口） */
   dynamic?: number;
-  /** 磁盘重定向：本地目录绝对路径（空/缺省 = 不重定向） */
-  drivePath?: string;
-  /** 磁盘重定向在远端显示的盘名 */
-  driveName?: string;
+  /** 磁盘重定向：把本地目录挂成远端网络盘（name=盘名, path=本地绝对路径） */
+  drives?: Array<{ name: string; path: string }>;
 }
 
 export interface CertRequest {
