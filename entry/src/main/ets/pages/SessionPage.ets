@@ -486,18 +486,18 @@ export struct SessionPage {
             this.toolButton($r('sys.symbol.arrow_counterclockwise'), '复位', false, () => {
               this.resetZoom();
             })
+            // 系统键：代发 Win/Ctrl+Alt+Del 等到远端；仅手机/平板显示，PC 用物理键盘
+            Column({ space: 2 }) {
+              SymbolGlyph($r('sys.symbol.gearshape'))
+                .fontSize(22)
+                .fontColor([Color.White])
+              Text('系统键')
+                .fontSize(10)
+                .fontColor(Color.White)
+            }
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .bindMenu(this.systemKeysMenu())
           }
-          // 系统键：发送 Win/Ctrl+Alt+Del 等到远端（鸿蒙拦截 Win 键，故由此菜单代发）
-          Column({ space: 2 }) {
-            SymbolGlyph($r('sys.symbol.gearshape'))
-              .fontSize(22)
-              .fontColor([Color.White])
-            Text('系统键')
-              .fontSize(10)
-              .fontColor(Color.White)
-          }
-          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-          .bindMenu(this.systemKeysMenu())
 
           this.toolButton(
             this.fullscreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
