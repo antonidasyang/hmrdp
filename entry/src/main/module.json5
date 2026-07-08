@@ -48,9 +48,6 @@
           ],
           "when": "inuse"
         }
-      },
-      {
-        "name": "ohos.permission.WINDOW_TOPMOST"
       }
     ],
     "abilities": [

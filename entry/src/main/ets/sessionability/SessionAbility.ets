@@ -50,9 +50,6 @@ export default class SessionAbility extends UIAbility {
           win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
             .catch((e: Object) => {
             });
-          // 窗口置顶（对齐 OSEasy：WINDOW_TOPMOST），让会话窗口独占前台
-          win.setWindowTopmost(true).catch((e: Object) => {
-          });
         }).catch((e: Object) => {
         });
       }

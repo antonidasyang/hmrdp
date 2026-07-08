@@ -1,5 +1,5 @@
 import { SymbolGlyphModifier } from '@kit.ArkUI';
-import { abilityAccessCtrl, common, Permissions, Want } from '@kit.AbilityKit';
+import { abilityAccessCtrl, common, Permissions, Want, StartOptions, AbilityConstant } from '@kit.AbilityKit';
 import { EditPCPage, EditPCParams } from './EditPCPage';
 import { SessionPage } from './SessionPage';
 import { AboutPage } from './AboutPage';
@@ -101,7 +101,11 @@ struct Index {
         shareDirs: params.shareDirs.join(',')
       }
     };
-    ctx.startAbility(want).catch((e: Object) => {
+    // 以全屏窗口模式启动，尽量让会话窗口成为独立全屏形态（2in1）
+    const options: StartOptions = {
+      windowMode: AbilityConstant.WindowMode.WINDOW_MODE_FULLSCREEN
+    };
+    ctx.startAbility(want, options).catch((e: Object) => {
       // 启动独立窗口失败则回退到应用内会话
       this.pathStack.pushPathByName('session', params);
     });
