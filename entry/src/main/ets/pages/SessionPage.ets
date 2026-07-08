@@ -138,17 +138,51 @@ export struct SessionPage {
     return this.getUIContext().getHostContext()!;
   }
 
-  /** 沉浸式全屏：铺满布局 + 隐藏系统状态/导航栏（2in1 上会占独立桌面） */
+  /** 全屏：2in1 真正最大化占满整屏（独立全屏桌面）；手机/平板沉浸式隐藏系统栏 */
   private async applyFullscreen(on: boolean): Promise<void> {
     try {
       const win = await window.getLastWindow(this.ctx());
-      await win.setWindowLayoutFullScreen(on);
-      const bars: Array<'status' | 'navigation'> = on ? [] : ['status', 'navigation'];
-      await win.setWindowSystemBarEnable(bars);
+      if (this.isPc) {
+        // 最大化到整屏、隐藏标题栏与 dock 悬停，成为独占的全屏桌面
+        if (on) {
+          await win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER);
+        } else {
+          await win.recover();
+        }
+      } else {
+        await win.setWindowLayoutFullScreen(on);
+        const bars: Array<'status' | 'navigation'> = on ? [] : ['status', 'navigation'];
+        await win.setWindowSystemBarEnable(bars);
+      }
       this.fullscreen = on;
     } catch (e) {
       // 部分设备形态不支持全屏，忽略
     }
+  }
+
+  /** 向远端发送一组组合键（依次按下、逆序抬起）。keys: [scancode, extended(0/1)][] */
+  private sendCombo(keys: number[][]): void {
+    for (let i = 0; i < keys.length; i++) {
+      hmrdp.sendScancode(keys[i][0], keys[i][1] === 1, true);
+    }
+    for (let i = keys.length - 1; i >= 0; i--) {
+      hmrdp.sendScancode(keys[i][0], keys[i][1] === 1, false);
+    }
+  }
+
+  /** 系统/快捷键菜单：由 App 生成扫描码发给远端 Windows（绕过鸿蒙对 Win 键等的拦截） */
+  private systemKeysMenu(): MenuElement[] {
+    return [
+      { value: 'Win（开始菜单）', action: () => this.sendCombo([[0x5B, 1]]) },
+      { value: 'Win + D（显示桌面）', action: () => this.sendCombo([[0x5B, 1], [0x20, 0]]) },
+      { value: 'Win + E（资源管理器）', action: () => this.sendCombo([[0x5B, 1], [0x12, 0]]) },
+      { value: 'Win + R（运行）', action: () => this.sendCombo([[0x5B, 1], [0x13, 0]]) },
+      { value: 'Win + L（锁屏）', action: () => this.sendCombo([[0x5B, 1], [0x26, 0]]) },
+      { value: 'Ctrl + Alt + Del', action: () => this.sendCombo([[0x1D, 0], [0x38, 0], [0x53, 1]]) },
+      { value: 'Alt + Tab（切换窗口）', action: () => this.sendCombo([[0x38, 0], [0x0F, 0]]) },
+      { value: 'Alt + F4（关闭窗口）', action: () => this.sendCombo([[0x38, 0], [0x3E, 0]]) },
+      { value: 'Esc', action: () => this.sendCombo([[0x01, 0]]) }
+    ] as MenuElement[];
   }
 
   private toggleFullscreen(): void {
@@ -340,14 +374,25 @@ export struct SessionPage {
 
     // 分辨率跟随本机：width/height 为 0 时启用动态分辨率（disp 通道随窗口实时匹配）
     const dynamic = (this.params.width === 0 || this.params.height === 0);
+    let initW = dynamic ? 0 : this.params.width;
+    let initH = dynamic ? 0 : this.params.height;
+    if (this.params.fullscreen) {
+      // 全屏：初始就用整块屏幕分辨率，避免动态分辨率生效前偏低
+      try {
+        const d = display.getDefaultDisplaySync();
+        initW = d.width;
+        initH = d.height;
+      } catch (e) {
+      }
+    }
     const config: HmConnectConfig = {
       host: this.params.host,
       port: this.params.port,
       username: this.params.username,
       password: this.params.password,
       domain: this.params.domain,
-      width: dynamic ? 0 : this.params.width,
-      height: dynamic ? 0 : this.params.height,
+      width: initW,
+      height: initH,
       scale: scale,
       dynamic: dynamic ? 1 : 0,
       drives: this.resolveShareDrives() // 磁盘重定向：下载/文档目录挂成远端网络盘
@@ -442,6 +487,18 @@ export struct SessionPage {
               this.resetZoom();
             })
           }
+          // 系统键：发送 Win/Ctrl+Alt+Del 等到远端（鸿蒙拦截 Win 键，故由此菜单代发）
+          Column({ space: 2 }) {
+            SymbolGlyph($r('sys.symbol.gearshape'))
+              .fontSize(22)
+              .fontColor([Color.White])
+            Text('系统键')
+              .fontSize(10)
+              .fontColor(Color.White)
+          }
+          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+          .bindMenu(this.systemKeysMenu())
+
           this.toolButton(
             this.fullscreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
                             : $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
