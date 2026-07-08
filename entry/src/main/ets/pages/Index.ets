@@ -1,5 +1,5 @@
 import { SymbolGlyphModifier } from '@kit.ArkUI';
-import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
+import { abilityAccessCtrl, common, Permissions, Want } from '@kit.AbilityKit';
 import { EditPCPage, EditPCParams } from './EditPCPage';
 import { SessionPage } from './SessionPage';
 import { AboutPage } from './AboutPage';
@@ -10,6 +10,7 @@ import { PCEntry, displayName } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
 import { AccountStore } from '../model/AccountStore';
 import { DEFAULT_SHARE_DIRS } from '../model/ShareFolders';
+import { isPcDevice } from '../model/DeviceKit';
 import { PasswordDialog } from '../components/PasswordDialog';
 import hmrdp from 'libhmrdp.so';
 
@@ -73,7 +74,36 @@ struct Index {
     params.scale = pc.scale;
     params.fullscreen = pc.fullscreen === true;
     params.shareDirs = pc.shareDirs ?? DEFAULT_SHARE_DIRS;
-    this.pathStack.pushPathByName('session', params);
+    if (isPcDevice()) {
+      this.launchSessionWindow(params); // PC：开独立全屏会话窗口
+    } else {
+      this.pathStack.pushPathByName('session', params); // 手机/平板：应用内会话
+    }
+  }
+
+  /** PC/2in1：把会话开进单独的 UIAbility 窗口（与列表窗口分开） */
+  private launchSessionWindow(params: SessionParams): void {
+    const ctx = this.ctx() as common.UIAbilityContext;
+    const want: Want = {
+      bundleName: ctx.abilityInfo.bundleName,
+      abilityName: 'SessionAbility',
+      parameters: {
+        host: params.host,
+        port: params.port,
+        username: params.username,
+        password: params.password,
+        domain: params.domain,
+        width: params.width,
+        height: params.height,
+        scale: params.scale,
+        fullscreen: params.fullscreen,
+        shareDirs: params.shareDirs.join(',')
+      }
+    };
+    ctx.startAbility(want).catch((e: Object) => {
+      // 启动独立窗口失败则回退到应用内会话
+      this.pathStack.pushPathByName('session', params);
+    });
   }
 
   private connectTo(pc: PCEntry): void {

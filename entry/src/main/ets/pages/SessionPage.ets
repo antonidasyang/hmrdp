@@ -129,8 +129,6 @@ export struct SessionPage {
   }
 
   aboutToAppear(): void {
-    // 大屏分栏时隐藏列表栏，让会话占满整窗
-    AppStorage.setOrCreate('hmrdpInSession', true);
     this.isPc = isPcDevice();
   }
 
@@ -445,7 +443,16 @@ export struct SessionPage {
         // ignore
       }
     }
-    this.pathStack?.pop();
+    if (this.params.standalone) {
+      // 独立会话窗口：断开即关闭该窗口/Ability
+      try {
+        (this.ctx() as common.UIAbilityContext).terminateSelf();
+      } catch (e) {
+        this.pathStack?.pop();
+      }
+    } else {
+      this.pathStack?.pop();
+    }
   }
 
   @Builder
@@ -631,15 +638,21 @@ export struct SessionPage {
       if (ctx.pathInfo.param instanceof SessionParams) {
         this.params = ctx.pathInfo.param as SessionParams;
       }
+      // 应用内会话（手机/平板分栏）时隐藏列表栏；独立窗口不影响列表窗口
+      if (!this.params.standalone) {
+        AppStorage.setOrCreate('hmrdpInSession', true);
+      }
       // 「全屏」分辨率档：进入会话即切沉浸式全屏
       if (this.params.fullscreen) {
         this.applyFullscreen(true);
       }
     })
     .onDisAppear(() => {
-      AppStorage.setOrCreate('hmrdpInSession', false);
-      if (this.fullscreen) {
-        this.applyFullscreen(false); // 退出时恢复系统栏
+      if (!this.params.standalone) {
+        AppStorage.setOrCreate('hmrdpInSession', false);
+        if (this.fullscreen) {
+          this.applyFullscreen(false); // 应用内会话退出时恢复系统栏；独立窗口整体关闭无需恢复
+        }
       }
       this.teardownClipboard();
       this.releaseKeyboard();

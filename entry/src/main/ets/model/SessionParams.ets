@@ -14,6 +14,8 @@ export class SessionParams {
   fullscreen: boolean = false;
   /** 共享给远程的本地目录 key 列表（见 ShareFolders） */
   shareDirs: string[] = [];
+  /** 是否在独立会话窗口(SessionAbility)中运行；true 时断开=关闭该窗口 */
+  standalone: boolean = false;
 
   constructor(host?: string, port?: number, username?: string, password?: string, domain?: string) {
     this.host = host ?? '';
