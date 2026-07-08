@@ -11,6 +11,7 @@
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
+#include <freerdp/client/disp.h>
 #include <native_window/external_window.h>
 
 namespace hmrdp {
@@ -31,6 +32,7 @@ struct SessionConfig {
     uint32_t width = 0;   // 0 = 跟随 surface 尺寸
     uint32_t height = 0;
     uint32_t scale = 100; // DesktopScaleFactor 百分比 [100,500]
+    bool dynamicResolution = false; // true: 启用 disp 显示控制，远端分辨率跟随本机窗口
 };
 
 // 状态回调：由 RDP 线程调用，实现方负责线程安全（NAPI 侧用 TSFN）
@@ -86,6 +88,12 @@ public:
         h = desktopHeight_.load();
     }
 
+    bool IsDynamicResolution() const { return config_.dynamicResolution; }
+    // 动态分辨率：请求把远端桌面调整为 w×h（任意线程；经 disp 通道在 RDP 线程下发）
+    void RequestResize(uint32_t w, uint32_t h);
+    // disp 显示控制通道就绪/断开（RDP 线程，通道连接事件）
+    void OnDispConnected(DispClientContext* disp);
+
     // ---- 以下供 freerdp C 回调使用（均在 RDP 线程）----
     void MarkDirty(int32_t x, int32_t y, int32_t w, int32_t h); // EndPaint 累积脏区
     void PresentIfDirty();                                       // 每轮事件后合并提交一次
@@ -116,6 +124,7 @@ private:
     void PushInput(const InputEvent& event);
     void DrainInput();
     bool MapToDesktop(float sx, float sy, uint16_t& dx, uint16_t& dy);
+    void SendResizeIfPending(); // RDP 线程：有待定尺寸则经 disp 下发布局
 
     SessionConfig config_;
     StateCallback stateCb_;
@@ -136,6 +145,13 @@ private:
 
     std::atomic<uint32_t> desktopWidth_{ 0 };
     std::atomic<uint32_t> desktopHeight_{ 0 };
+
+    // disp 动态分辨率（disp_ 仅 RDP 线程访问）
+    DispClientContext* disp_ = nullptr;
+    std::atomic<uint32_t> pendingW_{ 0 };
+    std::atomic<uint32_t> pendingH_{ 0 };
+    std::atomic<bool> resizePending_{ false };
+    uint32_t layoutScale_ = 100;
 
     // 脏区累积（仅 RDP 线程访问）
     bool presentPending_ = false;

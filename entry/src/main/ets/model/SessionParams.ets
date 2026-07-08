@@ -10,6 +10,8 @@ export class SessionParams {
   height: number = 0;
   /** 显示缩放百分比，0 = 跟随设备 */
   scale: number = 0;
+  /** 进入会话即切全屏（沉浸式） */
+  fullscreen: boolean = false;
 
   constructor(host?: string, port?: number, username?: string, password?: string, domain?: string) {
     this.host = host ?? '';

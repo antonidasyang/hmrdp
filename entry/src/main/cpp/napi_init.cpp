@@ -149,8 +149,11 @@ void OnSurfaceCreated(OH_NativeXComponent* component, void* window)
     g_window = nativeWindow;
     g_surfaceW = w;
     g_surfaceH = h;
-    if (g_session)
+    if (g_session) {
         g_session->AttachWindow(nativeWindow, w, h);
+        if (g_session->IsDynamicResolution())
+            g_session->RequestResize(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+    }
 }
 
 void OnSurfaceChanged(OH_NativeXComponent* component, void* window)
@@ -161,8 +164,11 @@ void OnSurfaceChanged(OH_NativeXComponent* component, void* window)
     std::lock_guard<std::mutex> lock(g_mutex);
     g_surfaceW = w;
     g_surfaceH = h;
-    if (g_session)
+    if (g_session) {
         g_session->AttachWindow(static_cast<OHNativeWindow*>(window), w, h);
+        if (g_session->IsDynamicResolution())
+            g_session->RequestResize(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+    }
 }
 
 void OnSurfaceDestroyed(OH_NativeXComponent* /*component*/, void* /*window*/)
@@ -306,6 +312,7 @@ napi_value Connect(napi_env env, napi_callback_info info)
     config.width = GetUint32Prop(env, args[0], "width", 0);
     config.height = GetUint32Prop(env, args[0], "height", 0);
     config.scale = GetUint32Prop(env, args[0], "scale", 100);
+    config.dynamicResolution = GetUint32Prop(env, args[0], "dynamic", 0) != 0;
 
     if (config.host.empty()) {
         napi_throw_error(env, nullptr, "host 不能为空");
@@ -484,6 +491,28 @@ napi_value SendScancode(napi_env env, napi_callback_info info)
     return undefined;
 }
 
+// requestResize(width: number, height: number) — 动态分辨率：请求远端桌面尺寸
+napi_value RequestResize(napi_env env, napi_callback_info info)
+{
+    size_t argc = 2;
+    napi_value args[2] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t w = 0;
+    uint32_t h = 0;
+    if (argc >= 2) {
+        napi_get_value_uint32(env, args[0], &w);
+        napi_get_value_uint32(env, args[1], &h);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_session)
+            g_session->RequestResize(w, h);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 void RegisterXComponent(napi_env env, napi_value exports)
 {
     napi_value exportInstance = nullptr;
@@ -509,6 +538,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "respondCert", nullptr, RespondCert, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setGestureActive", nullptr, SetGestureActive, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setTouchMode", nullptr, SetTouchMode, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     RegisterXComponent(env, exports);

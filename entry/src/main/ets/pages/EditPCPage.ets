@@ -19,10 +19,12 @@ interface ResolutionOption {
   label: string;
   width: number;
   height: number;
+  fullscreen?: boolean;
 }
 
 const RESOLUTIONS: ResolutionOption[] = [
-  { label: '跟随屏幕', width: 0, height: 0 },
+  { label: '跟随窗口（动态）', width: 0, height: 0 },
+  { label: '全屏（跟随本机）', width: 0, height: 0, fullscreen: true },
   { label: '1280 × 720', width: 1280, height: 720 },
   { label: '1920 × 1080', width: 1920, height: 1080 },
   { label: '2560 × 1440', width: 2560, height: 1440 },
@@ -105,7 +107,9 @@ export struct EditPCPage {
     this.username = pc.username;
     this.hasSavedPassword = pc.hasPassword;
     this.accountId = pc.accountId ?? '';
-    this.resolutionIndex = Math.max(0, RESOLUTIONS.findIndex((r) => r.width === pc.width && r.height === pc.height));
+    const pcFull = pc.fullscreen === true;
+    this.resolutionIndex = Math.max(0, RESOLUTIONS.findIndex((r) =>
+      r.width === pc.width && r.height === pc.height && (r.fullscreen === true) === pcFull));
     this.scaleIndex = Math.max(0, SCALES.findIndex((s) => s.value === pc.scale));
   }
 
@@ -160,6 +164,7 @@ export struct EditPCPage {
       width: RESOLUTIONS[this.resolutionIndex].width,
       height: RESOLUTIONS[this.resolutionIndex].height,
       scale: SCALES[this.scaleIndex].value,
+      fullscreen: RESOLUTIONS[this.resolutionIndex].fullscreen === true,
       createdAt: old?.createdAt ?? Date.now(),
       lastUsedAt: old?.lastUsedAt ?? 0
     };

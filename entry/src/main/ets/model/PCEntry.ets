@@ -15,6 +15,8 @@ export interface PCEntry {
   height: number;
   /** 显示缩放百分比，0 = 跟随设备 */
   scale: number;
+  /** 进入会话即切全屏（沉浸式），常配合动态分辨率 */
+  fullscreen?: boolean;
   createdAt: number;
   lastUsedAt: number;
 }

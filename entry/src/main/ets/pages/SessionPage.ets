@@ -1,9 +1,10 @@
-import { display, promptAction } from '@kit.ArkUI';
+import { display, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { common } from '@kit.AbilityKit';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
+import { isPcDevice } from '../model/DeviceKit';
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -67,6 +68,7 @@ interface HmConnectConfig {
   width: number;
   height: number;
   scale: number;
+  dynamic: number;
 }
 
 const STATE_CONNECTING = 0;
@@ -81,6 +83,8 @@ export struct SessionPage {
   @State errorText: string = '';
   @State toolbarExpanded: boolean = true;
   @State trackpadMode: boolean = false;
+  @State isPc: boolean = false;
+  @State fullscreen: boolean = false;
   // 视图缩放/平移（作用于 XComponent 显示，不改变远端分辨率）
   @State viewScale: number = 1;
   @State offsetX: number = 0;
@@ -112,10 +116,28 @@ export struct SessionPage {
   aboutToAppear(): void {
     // 大屏分栏时隐藏列表栏，让会话占满整窗
     AppStorage.setOrCreate('hmrdpInSession', true);
+    this.isPc = isPcDevice();
   }
 
   private ctx(): common.Context {
     return this.getUIContext().getHostContext()!;
+  }
+
+  /** 沉浸式全屏：铺满布局 + 隐藏系统状态/导航栏（2in1 上会占独立桌面） */
+  private async applyFullscreen(on: boolean): Promise<void> {
+    try {
+      const win = await window.getLastWindow(this.ctx());
+      await win.setWindowLayoutFullScreen(on);
+      const bars: Array<'status' | 'navigation'> = on ? [] : ['status', 'navigation'];
+      await win.setWindowSystemBarEnable(bars);
+      this.fullscreen = on;
+    } catch (e) {
+      // 部分设备形态不支持全屏，忽略
+    }
+  }
+
+  private toggleFullscreen(): void {
+    this.applyFullscreen(!this.fullscreen);
   }
 
   private onCertRequest(request: HmCertRequest): void {
@@ -212,15 +234,18 @@ export struct SessionPage {
     }
     scale = Math.min(500, Math.max(100, scale));
 
+    // 分辨率跟随本机：width/height 为 0 时启用动态分辨率（disp 通道随窗口实时匹配）
+    const dynamic = (this.params.width === 0 || this.params.height === 0);
     const config: HmConnectConfig = {
       host: this.params.host,
       port: this.params.port,
       username: this.params.username,
       password: this.params.password,
       domain: this.params.domain,
-      width: this.params.width,
-      height: this.params.height,
-      scale: scale
+      width: dynamic ? 0 : this.params.width,
+      height: dynamic ? 0 : this.params.height,
+      scale: scale,
+      dynamic: dynamic ? 1 : 0
     };
     this.errorText = '';
     this.statusText = '正在连接…';
@@ -289,23 +314,32 @@ export struct SessionPage {
     Row() {
       if (this.toolbarExpanded) {
         Row({ space: 2 }) {
-          this.toolButton($r('sys.symbol.keyboard'), '键盘', this.keyboardShown, () => {
-            if (this.keyboardShown) {
-              this.hideKeyboard();
-            } else {
-              this.showKeyboard();
-            }
-          })
-          this.toolButton($r('sys.symbol.hand_point_up_tap_fill'), this.trackpadMode ? '触控板' : '直接触摸',
-            this.trackpadMode, () => {
-              this.trackpadMode = !this.trackpadMode;
-              hmrdp.setTouchMode(this.trackpadMode);
-              this.resetZoom();
-              promptAction.showToast({ message: this.trackpadMode ? '触控板模式' : '直接触摸模式' });
+          // PC/2in1 有物理键鼠，隐藏触摸相关的软件控制（键盘/触控板/复位）
+          if (!this.isPc) {
+            this.toolButton($r('sys.symbol.keyboard'), '键盘', this.keyboardShown, () => {
+              if (this.keyboardShown) {
+                this.hideKeyboard();
+              } else {
+                this.showKeyboard();
+              }
             })
-          this.toolButton($r('sys.symbol.arrow_counterclockwise'), '复位', false, () => {
-            this.resetZoom();
-          })
+            this.toolButton($r('sys.symbol.hand_point_up_tap_fill'), this.trackpadMode ? '触控板' : '直接触摸',
+              this.trackpadMode, () => {
+                this.trackpadMode = !this.trackpadMode;
+                hmrdp.setTouchMode(this.trackpadMode);
+                this.resetZoom();
+                promptAction.showToast({ message: this.trackpadMode ? '触控板模式' : '直接触摸模式' });
+              })
+            this.toolButton($r('sys.symbol.arrow_counterclockwise'), '复位', false, () => {
+              this.resetZoom();
+            })
+          }
+          this.toolButton(
+            this.fullscreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
+                            : $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
+            this.fullscreen ? '退出全屏' : '全屏', this.fullscreen, () => {
+              this.toggleFullscreen();
+            })
           this.toolButton($r('sys.symbol.xmark'), '断开', false, () => {
             this.leave('');
           })
@@ -432,9 +466,16 @@ export struct SessionPage {
       if (ctx.pathInfo.param instanceof SessionParams) {
         this.params = ctx.pathInfo.param as SessionParams;
       }
+      // 「全屏」分辨率档：进入会话即切沉浸式全屏
+      if (this.params.fullscreen) {
+        this.applyFullscreen(true);
+      }
     })
     .onDisAppear(() => {
       AppStorage.setOrCreate('hmrdpInSession', false);
+      if (this.fullscreen) {
+        this.applyFullscreen(false); // 退出时恢复系统栏
+      }
       this.releaseKeyboard();
       hmrdp.disconnect();
     })

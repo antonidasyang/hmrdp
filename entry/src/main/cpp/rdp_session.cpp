@@ -10,7 +10,9 @@
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <freerdp/error.h>
+#include <freerdp/event.h>
 #include <freerdp/client/channels.h>
+#include <freerdp/channels/disp.h>
 #include <winpr/synch.h>
 #include <winpr/wlog.h>
 #include <native_buffer/native_buffer.h>
@@ -64,6 +66,20 @@ BOOL HmDesktopResize(rdpContext* context)
     return TRUE;
 }
 
+// 额外订阅（与 FreeRDP 通用处理并存）：捕获 disp 显示控制通道上下文
+void HmOnChannelConnected(void* context, const ChannelConnectedEventArgs* e)
+{
+    if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
+        SessionOf(reinterpret_cast<rdpContext*>(context))
+            ->OnDispConnected(reinterpret_cast<DispClientContext*>(e->pInterface));
+}
+
+void HmOnChannelDisconnected(void* context, const ChannelDisconnectedEventArgs* e)
+{
+    if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
+        SessionOf(reinterpret_cast<rdpContext*>(context))->OnDispConnected(nullptr);
+}
+
 BOOL HmPreConnect(freerdp* instance)
 {
     rdpContext* context = instance->context;
@@ -72,6 +88,9 @@ BOOL HmPreConnect(freerdp* instance)
                                      freerdp_client_OnChannelConnectedEventHandler);
     PubSub_SubscribeChannelDisconnected(context->pubSub,
                                         freerdp_client_OnChannelDisconnectedEventHandler);
+    // 我方处理器：捕获 disp（显示控制）上下文，用于动态分辨率
+    PubSub_SubscribeChannelConnected(context->pubSub, HmOnChannelConnected);
+    PubSub_SubscribeChannelDisconnected(context->pubSub, HmOnChannelDisconnected);
 
     if (!freerdp_client_load_addins(context->channels, context->settings))
         return FALSE;
@@ -249,6 +268,7 @@ bool RdpSession::ApplySettings()
         scale = 100;
     if (scale > 500)
         scale = 500;
+    layoutScale_ = scale; // disp 布局沿用同一 DesktopScaleFactor
     ok = ok && freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale);
     ok = ok && freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, 100);
 
@@ -263,6 +283,10 @@ bool RdpSession::ApplySettings()
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_GfxSmallCache, FALSE);
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_GfxThinClient, FALSE);
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_SupportDynamicChannels, TRUE);
+
+    // 动态分辨率（RDPEDISP 显示控制）：远端桌面跟随本机窗口，由 SendMonitorLayout 手动下发
+    if (config_.dynamicResolution)
+        ok = ok && freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, TRUE);
 
     // 经典编解码回退（GFX 未协商时）
     ok = ok && freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, TRUE);
@@ -355,6 +379,7 @@ void RdpSession::ThreadMain()
         if (WaitForSingleObject(stopEvent_, 0) == WAIT_OBJECT_0)
             break;
         DrainInput();
+        SendResizeIfPending();
         if (!freerdp_check_event_handles(context_)) {
             if (freerdp_get_last_error(context_) == FREERDP_ERROR_SUCCESS)
                 HMLOGW("会话事件处理失败，断开");
@@ -399,6 +424,64 @@ void RdpSession::OnDesktopResize(uint32_t w, uint32_t h)
     desktopHeight_.store(h);
     std::lock_guard<std::mutex> lock(windowMutex_);
     geometryDirty_ = true;
+}
+
+// ---- 动态分辨率（disp 显示控制）----
+
+void RdpSession::RequestResize(uint32_t w, uint32_t h)
+{
+    if (w < DISPLAY_CONTROL_MIN_MONITOR_WIDTH || h < DISPLAY_CONTROL_MIN_MONITOR_HEIGHT)
+        return;
+    w &= ~1u; // 偶数对齐
+    h &= ~1u;
+    if (w > DISPLAY_CONTROL_MAX_MONITOR_WIDTH)
+        w = DISPLAY_CONTROL_MAX_MONITOR_WIDTH;
+    if (h > DISPLAY_CONTROL_MAX_MONITOR_HEIGHT)
+        h = DISPLAY_CONTROL_MAX_MONITOR_HEIGHT;
+    pendingW_.store(w);
+    pendingH_.store(h);
+    resizePending_.store(true);
+    if (inputSignal_)
+        SetEvent(inputSignal_); // 唤醒事件循环，在 RDP 线程内下发
+}
+
+void RdpSession::OnDispConnected(DispClientContext* disp)
+{
+    disp_ = disp; // 仅 RDP 线程访问
+    if (disp_ && resizePending_.load())
+        SetEvent(inputSignal_); // 通道就绪，尽快补发待定尺寸
+}
+
+void RdpSession::SendResizeIfPending()
+{
+    if (!resizePending_.exchange(false))
+        return;
+    if (!disp_ || !disp_->SendMonitorLayout)
+        return;
+    const uint32_t w = pendingW_.load();
+    const uint32_t h = pendingH_.load();
+    if (w < DISPLAY_CONTROL_MIN_MONITOR_WIDTH || h < DISPLAY_CONTROL_MIN_MONITOR_HEIGHT)
+        return;
+    // 与远端当前尺寸一致则跳过，避免无谓往返
+    if (w == desktopWidth_.load() && h == desktopHeight_.load())
+        return;
+
+    DISPLAY_CONTROL_MONITOR_LAYOUT layout = {};
+    layout.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
+    layout.Left = 0;
+    layout.Top = 0;
+    layout.Width = w;
+    layout.Height = h;
+    layout.Orientation = 0; // ORIENTATION_LANDSCAPE
+    layout.DesktopScaleFactor = layoutScale_;
+    layout.DeviceScaleFactor = 100;
+    layout.PhysicalWidth = 0;
+    layout.PhysicalHeight = 0;
+    const UINT rc = disp_->SendMonitorLayout(disp_, 1, &layout);
+    if (rc != 0)
+        HMLOGW("disp SendMonitorLayout 失败: %{public}u", rc);
+    else
+        HMLOGI("disp 请求远端分辨率 %{public}ux%{public}u", w, h);
 }
 
 // ---- 输入注入 ----

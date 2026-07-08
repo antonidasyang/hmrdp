@@ -53,6 +53,7 @@ struct Index {
     params.width = pc.width;
     params.height = pc.height;
     params.scale = pc.scale;
+    params.fullscreen = pc.fullscreen === true;
     this.pathStack.pushPathByName('session', params);
   }
 
