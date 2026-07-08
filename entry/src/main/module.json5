@@ -38,17 +38,16 @@
           ],
           "when": "inuse"
         }
-      },
-      {
-        "name": "ohos.permission.INTERCEPT_INPUT_EVENT",
-        "reason": "$string:perm_intercept_reason",
-        "usedScene": {
-          "abilities": [
-            "SessionAbility"
-          ],
-          "when": "inuse"
-        }
       }
+      // 物理键盘拦截需受限权限 INTERCEPT_INPUT_EVENT：必须先在 AGC 申请受限权限、
+      // 拿到带 ACL 的签名 Profile 后才能安装（否则报 9568289）。原生拦截代码已就位，
+      // 拿到授权后取消下面这段注释即可启用（注意前一项末尾要补逗号）：
+      // ,
+      // {
+      //   "name": "ohos.permission.INTERCEPT_INPUT_EVENT",
+      //   "reason": "$string:perm_intercept_reason",
+      //   "usedScene": { "abilities": ["SessionAbility"], "when": "inuse" }
+      // }
     ],
     "abilities": [
       {
