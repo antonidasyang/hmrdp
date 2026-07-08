@@ -5,6 +5,7 @@ import { PCStore } from '../model/PCStore';
 import { AccountEntry, accountDisplay } from '../model/AccountEntry';
 import { AccountStore } from '../model/AccountStore';
 import { EditAccountParams } from './EditAccountPage';
+import { SHARE_TARGETS, ShareTarget, DEFAULT_SHARE_DIRS } from '../model/ShareFolders';
 
 export class EditPCParams {
   /** 空串 = 新建 */
@@ -53,6 +54,7 @@ export struct EditPCPage {
   @State resolutionIndex: number = 0;
   @State scaleIndex: number = 0;
   @State editingId: string = '';
+  @State shareDirs: string[] = [...DEFAULT_SHARE_DIRS];
   @State accounts: AccountEntry[] = [];
   /** 选中的已保存账号 id；'' = 手动输入 */
   @State accountId: string = '';
@@ -107,6 +109,7 @@ export struct EditPCPage {
     this.username = pc.username;
     this.hasSavedPassword = pc.hasPassword;
     this.accountId = pc.accountId ?? '';
+    this.shareDirs = pc.shareDirs ? [...pc.shareDirs] : [...DEFAULT_SHARE_DIRS];
     const pcFull = pc.fullscreen === true;
     this.resolutionIndex = Math.max(0, RESOLUTIONS.findIndex((r) =>
       r.width === pc.width && r.height === pc.height && (r.fullscreen === true) === pcFull));
@@ -165,6 +168,7 @@ export struct EditPCPage {
       height: RESOLUTIONS[this.resolutionIndex].height,
       scale: SCALES[this.scaleIndex].value,
       fullscreen: RESOLUTIONS[this.resolutionIndex].fullscreen === true,
+      shareDirs: this.shareDirs,
       createdAt: old?.createdAt ?? Date.now(),
       lastUsedAt: old?.lastUsedAt ?? 0
     };
@@ -203,6 +207,26 @@ export struct EditPCPage {
       .fontColor($r('sys.color.font_secondary'))
       .alignSelf(ItemAlign.Start)
       .margin({ top: 8 })
+  }
+
+  @Builder
+  shareRow(t: ShareTarget) {
+    Row() {
+      Text(t.label)
+        .fontSize(15)
+      Blank()
+      Toggle({ type: ToggleType.Switch, isOn: this.shareDirs.includes(t.key) })
+        .onChange((isOn: boolean) => {
+          if (isOn) {
+            if (!this.shareDirs.includes(t.key)) {
+              this.shareDirs = this.shareDirs.concat([t.key]);
+            }
+          } else {
+            this.shareDirs = this.shareDirs.filter((k) => k !== t.key);
+          }
+        })
+    }
+    .width('100%')
   }
 
   build() {
@@ -299,6 +323,11 @@ export struct EditPCPage {
               })
           }
           .width('100%')
+
+          this.sectionTitle('共享文件夹（挂到远程电脑，需允许文件访问）')
+          ForEach(SHARE_TARGETS, (t: ShareTarget) => {
+            this.shareRow(t)
+          }, (t: ShareTarget) => t.key)
 
           Button('保存')
             .width('100%')

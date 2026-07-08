@@ -2,7 +2,7 @@ import { display, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
-import { fileIo, Environment } from '@kit.CoreFileKit';
+import { Environment } from '@kit.CoreFileKit';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
@@ -155,37 +155,28 @@ export struct SessionPage {
     this.applyFullscreen(!this.fullscreen);
   }
 
-  /** 磁盘重定向兜底目录（应用沙箱内 shared 子目录，文件管理里不可见） */
-  private ensureSharedDir(): string {
-    const dir = `${this.ctx().filesDir}/shared`;
-    try {
-      fileIo.mkdirSync(dir);
-    } catch (e) {
-      // 已存在则忽略
-    }
-    return dir;
-  }
-
-  /** 优先共享用户「下载/文档」目录（需权限，在主页启动时申请）；未授权则回退沙箱 */
+  /** 按本台电脑勾选的目录解析共享盘（需权限，在主页启动时申请）；未选/未授权则不挂盘 */
   private resolveShareDrives(): HmDriveEntry[] {
     const drives: HmDriveEntry[] = [];
-    try {
-      const dl = Environment.getUserDownloadDir();
-      if (dl && dl.length > 0) {
-        drives.push({ name: '下载', path: dl });
+    const dirs = this.params.shareDirs;
+    if (dirs.includes('download')) {
+      try {
+        const dl = Environment.getUserDownloadDir();
+        if (dl && dl.length > 0) {
+          drives.push({ name: '下载', path: dl });
+        }
+      } catch (e) {
+        // 未授权：getUserDownloadDir 抛异常，跳过
       }
-    } catch (e) {
-      // 未授权：getUserDownloadDir 抛异常，跳过
     }
-    try {
-      const doc = Environment.getUserDocumentDir();
-      if (doc && doc.length > 0) {
-        drives.push({ name: '文档', path: doc });
+    if (dirs.includes('documents')) {
+      try {
+        const doc = Environment.getUserDocumentDir();
+        if (doc && doc.length > 0) {
+          drives.push({ name: '文档', path: doc });
+        }
+      } catch (e) {
       }
-    } catch (e) {
-    }
-    if (drives.length === 0) {
-      drives.push({ name: 'HMRDP', path: this.ensureSharedDir() });
     }
     return drives;
   }

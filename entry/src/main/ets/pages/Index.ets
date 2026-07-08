@@ -9,6 +9,7 @@ import { SessionParams } from '../model/SessionParams';
 import { PCEntry, displayName } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
 import { AccountStore } from '../model/AccountStore';
+import { DEFAULT_SHARE_DIRS } from '../model/ShareFolders';
 import { PasswordDialog } from '../components/PasswordDialog';
 import hmrdp from 'libhmrdp.so';
 
@@ -71,6 +72,7 @@ struct Index {
     params.height = pc.height;
     params.scale = pc.scale;
     params.fullscreen = pc.fullscreen === true;
+    params.shareDirs = pc.shareDirs ?? DEFAULT_SHARE_DIRS;
     this.pathStack.pushPathByName('session', params);
   }
 
@@ -160,29 +162,29 @@ struct Index {
 
   @Builder
   pcCard(pc: PCEntry) {
-    Row({ space: 12 }) {
-      // 点击主体区 = 连接（图标 + 友好名/地址）
-      Row({ space: 12 }) {
+    Row({ space: 16 }) {
+      // 连接区（图标 + 友好名/地址）——点这里开始远控
+      Row({ space: 16 }) {
         Column() {
           SymbolGlyph($r('sys.symbol.computer'))
-            .fontSize(28)
+            .fontSize(38)
             .fontColor(['#1E7FD9'])
         }
-        .width(52)
-        .height(52)
-        .borderRadius(12)
+        .width(64)
+        .height(64)
+        .borderRadius(16)
         .justifyContent(FlexAlign.Center)
         .backgroundColor('#141E7FD9')
 
-        Column({ space: 4 }) {
+        Column({ space: 5 }) {
           // 有友好名显示友好名，否则直接显示地址
           Text(displayName(pc))
-            .fontSize(16)
+            .fontSize(19)
             .fontWeight(FontWeight.Medium)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
           Text(pc.username.length > 0 ? `${pc.host} · ${pc.username}` : pc.host)
-            .fontSize(13)
+            .fontSize(14)
             .fontColor($r('sys.color.font_secondary'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -195,30 +197,33 @@ struct Index {
         this.connectTo(pc);
       })
 
-      // 显式「更多」按钮：点击弹出编辑/删除（PC 与触摸都可用，不再依赖长按）
-      SymbolGlyph($r('sys.symbol.ellipsis_circle'))
-        .fontSize(22)
-        .fontColor([$r('sys.color.font_secondary')])
-        .padding(8)
-        .borderRadius(8)
-        .bindMenu([
-          {
-            value: '编辑',
-            action: () => {
-              this.pathStack.pushPathByName('edit', new EditPCParams(pc.id));
-            }
-          },
-          {
-            value: '删除',
-            action: () => {
-              this.removePC(pc);
-            }
+      // 「更多」独立按钮：右侧单独触控区，弹出编辑/删除，不与连接区冲突
+      Button({ type: ButtonType.Circle, stateEffect: true }) {
+        SymbolGlyph($r('sys.symbol.ellipsis_circle'))
+          .fontSize(24)
+          .fontColor([$r('sys.color.font_secondary')])
+      }
+      .width(48)
+      .height(48)
+      .backgroundColor(Color.Transparent)
+      .bindMenu([
+        {
+          value: '编辑',
+          action: () => {
+            this.pathStack.pushPathByName('edit', new EditPCParams(pc.id));
           }
-        ] as MenuElement[])
+        },
+        {
+          value: '删除',
+          action: () => {
+            this.removePC(pc);
+          }
+        }
+      ] as MenuElement[])
     }
     .width('100%')
-    .padding(14)
-    .borderRadius(16)
+    .padding({ left: 18, right: 10, top: 18, bottom: 18 })
+    .borderRadius(18)
     .backgroundColor($r('sys.color.comp_background_list_card'))
     .bindContextMenu(this.cardMenu(pc), ResponseType.LongPress)
   }
@@ -247,18 +252,19 @@ struct Index {
           .layoutWeight(1)
           .justifyContent(FlexAlign.Center)
         } else {
-          // 响应式多列：手机 1 列，平板 2 列，PC/大屏 3 列
+          // 每台电脑独占一行的大卡片；大屏限宽居中，避免过宽
           Scroll() {
-            GridRow({
-              columns: { xs: 1, sm: 1, md: 2, lg: 3 } as GridRowColumnOption,
-              gutter: { x: 10, y: 10 } as GutterOption
-            }) {
-              ForEach(this.pcs, (pc: PCEntry) => {
-                GridCol() {
+            Column() {
+              Column({ space: 12 }) {
+                ForEach(this.pcs, (pc: PCEntry) => {
                   this.pcCard(pc)
-                }
-              }, (pc: PCEntry) => pc.id)
+                }, (pc: PCEntry) => pc.id)
+              }
+              .width('100%')
+              .constraintSize({ maxWidth: 840 })
             }
+            .width('100%')
+            .alignItems(HorizontalAlign.Center)
             .padding({ left: 16, right: 16, top: 8, bottom: 8 })
           }
           .width('100%')

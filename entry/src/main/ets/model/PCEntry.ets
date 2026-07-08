@@ -17,6 +17,8 @@ export interface PCEntry {
   scale: number;
   /** 进入会话即切全屏（沉浸式），常配合动态分辨率 */
   fullscreen?: boolean;
+  /** 共享给远程的本地目录 key 列表（见 ShareFolders）；undefined = 默认全部 */
+  shareDirs?: string[];
   createdAt: number;
   lastUsedAt: number;
 }
