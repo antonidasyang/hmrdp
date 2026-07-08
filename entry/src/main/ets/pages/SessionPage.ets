@@ -488,18 +488,20 @@ export struct SessionPage {
             this.toolButton($r('sys.symbol.arrow_counterclockwise'), '复位', false, () => {
               this.resetZoom();
             })
-            // 系统键：代发 Win/Ctrl+Alt+Del 等到远端；仅手机/平板显示，PC 用物理键盘
-            Column({ space: 2 }) {
-              SymbolGlyph($r('sys.symbol.gearshape'))
-                .fontSize(22)
-                .fontColor([Color.White])
-              Text('系统键')
-                .fontSize(10)
-                .fontColor(Color.White)
-            }
-            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-            .bindMenu(this.systemKeysMenu())
-            // 全屏切换：仅手机/平板；PC 会话窗口由 SessionAbility 统一全屏管理
+          }
+          // 系统键：所有设备都显示——PC 上物理 Win/系统组合键被鸿蒙拦截，只能靠它代发
+          Column({ space: 2 }) {
+            SymbolGlyph($r('sys.symbol.gearshape'))
+              .fontSize(22)
+              .fontColor([Color.White])
+            Text('系统键')
+              .fontSize(10)
+              .fontColor(Color.White)
+          }
+          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+          .bindMenu(this.systemKeysMenu())
+          // 全屏切换：仅手机/平板；PC 会话窗口由 SessionAbility 统一全屏管理
+          if (!this.isPc) {
             this.toolButton(
               this.fullscreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
                               : $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
