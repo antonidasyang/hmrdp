@@ -8,6 +8,7 @@
 #include "napi/native_api.h"
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <multimodalinput/oh_input_manager.h>
+#include <multimodalinput/oh_axis_type.h>
 
 #include <atomic>
 
@@ -31,7 +32,9 @@ uint64_t g_surfaceH = 0;
 napi_threadsafe_function g_stateTsfn = nullptr;
 napi_threadsafe_function g_certTsfn = nullptr;
 napi_threadsafe_function g_clipTsfn = nullptr;
-std::atomic<bool> g_keyIntercepting{ false }; // 物理键盘拦截是否生效（受限权限）
+std::atomic<bool> g_keyIntercepting{ false };  // 物理键盘拦截是否生效（受限权限）
+std::atomic<bool> g_inputIntercepting{ false }; // 鼠标滚轮轴事件攔截（与键盘不同域，可并存）
+std::atomic<bool> g_touchEnabled{ true };     // 触摸→鼠标映射开关（PC 上关掉以避双击）
 
 struct StateEvent {
     int32_t state;
@@ -83,9 +86,11 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
         napi_release_threadsafe_function(certTsfn, napi_tsfn_release);
     if (clipTsfn)
         napi_release_threadsafe_function(clipTsfn, napi_tsfn_release);
-    // 断开兜底：即便 ArkTS 漏调也要释放键盘拦截，避免键盘被卡住
+    // 断开兜底：即便 ArkTS 漏调也要释放拦截器，避免输入设备被卡住
     if (state == SessionState::Disconnected && g_keyIntercepting.exchange(false))
         OH_Input_RemoveKeyEventInterceptor();
+    if (state == SessionState::Disconnected && g_inputIntercepting.exchange(false))
+        OH_Input_RemoveInputEventInterceptor();
     if (!tsfn)
         return;
     auto* event = new StateEvent{ static_cast<int32_t>(state), message ? message : "" };
@@ -236,6 +241,8 @@ RdpSession* CurrentSession()
 
 void DispatchTouchEvent(OH_NativeXComponent* component, void* window)
 {
+    if (!g_touchEnabled.load())
+        return; // PC/2in1 有物理键鼠，触摸由 ArkTS 手势处理，不走 TouchMapper 避免双击
     OH_NativeXComponent_TouchEvent event;
     if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0)
         return;
@@ -644,6 +651,73 @@ void OnInterceptedKey(const Input_KeyEvent* keyEvent)
         g_session->SendScancode(scancode, extended, action == KEY_ACTION_DOWN);
 }
 
+// ---- 鼠标滚轮：axis 拦截器（与键盘拦截器不同事件域，可并存）----
+
+void OnInterceptedAxis(const Input_AxisEvent* axisEvent)
+{
+    if (!axisEvent)
+        return;
+    InputEvent_AxisEventType evType = AXIS_EVENT_TYPE_SCROLL;
+    if (OH_Input_GetAxisEventType(axisEvent, &evType) != INPUT_SUCCESS || evType != AXIS_EVENT_TYPE_SCROLL)
+        return;
+    double value = 0;
+    if (OH_Input_GetAxisEventAxisValue(axisEvent, AXIS_TYPE_SCROLL_VERTICAL, &value) != INPUT_SUCCESS)
+        return;
+    float dispX = 0;
+    float dispY = 0;
+    OH_Input_GetAxisEventDisplayX(axisEvent, &dispX);
+    OH_Input_GetAxisEventDisplayY(axisEvent, &dispY);
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_session)
+        g_session->SendWheel(static_cast<int32_t>(-value * 120), dispX, dispY);
+}
+
+// setTouchEnabled(enable: boolean) — PC 上关闭触摸映射，避免和物理鼠标产生双击
+napi_value SetTouchEnabled(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool enable = true;
+    if (argc >= 1)
+        napi_get_value_bool(env, args[0], &enable);
+    g_touchEnabled.store(enable);
+    if (!enable) {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_touchMapper.Reset();
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// sendWheel(delta: number, surfaceX: number, surfaceY: number) — 鼠标滚轮（ArkTS onMouse 接过来）
+napi_value SendWheel(napi_env env, napi_callback_info info)
+{
+    size_t argc = 3;
+    napi_value args[3] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t delta = 0;
+    float x = 0;
+    float y = 0;
+    if (argc >= 3) {
+        napi_get_value_int32(env, args[0], &delta);
+        double v = 0;
+        napi_get_value_double(env, args[1], &v);
+        x = static_cast<float>(v);
+        napi_get_value_double(env, args[2], &v);
+        y = static_cast<float>(v);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_session)
+            g_session->SendWheel(delta, x, y);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // setKeyInterception(enable) — 返回是否处于拦截态（无受限权限时恒 false，自动降级）
 napi_value SetKeyInterception(napi_env env, napi_callback_info info)
 {
@@ -659,10 +733,26 @@ napi_value SetKeyInterception(napi_env env, napi_callback_info info)
         if (rc == INPUT_SUCCESS)
             g_keyIntercepting.store(true);
         else
-            HMLOGW("键盘拦截未启用(rc=%{public}d；多为未获 INTERCEPT_INPUT_EVENT 受限权限)", rc);
+            HMLOGW("键盘拦截未启用(rc=%{public}d)", rc);
+        // 鼠标滚轮 axis 拦截器（与键盘不同域，可并存；冲突时降级）
+        if (!g_inputIntercepting.load()) {
+            Input_InterceptorEventCallback icb = {};
+            icb.mouseCallback = nullptr; // 不拦截鼠标，让 XComponent 正常处理
+            icb.touchCallback = nullptr; // 不拦截触摸
+            icb.axisCallback = OnInterceptedAxis;
+            const Input_Result arc = OH_Input_AddInputEventInterceptor(&icb, nullptr);
+            if (arc == INPUT_SUCCESS)
+                g_inputIntercepting.store(true);
+            else
+                HMLOGW("滚轮拦截未启用(rc=%{public}d；若4200001=与键盘拦截互斥)", arc);
+        }
     } else if (!enable && g_keyIntercepting.load()) {
         OH_Input_RemoveKeyEventInterceptor();
         g_keyIntercepting.store(false);
+        if (g_inputIntercepting.load()) {
+            OH_Input_RemoveInputEventInterceptor();
+            g_inputIntercepting.store(false);
+        }
     }
 
     napi_value result = nullptr;
@@ -698,6 +788,8 @@ napi_value Init(napi_env env, napi_value exports)
         { "requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setKeyInterception", nullptr, SetKeyInterception, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setTouchEnabled", nullptr, SetTouchEnabled, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "sendWheel", nullptr, SendWheel, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     RegisterXComponent(env, exports);

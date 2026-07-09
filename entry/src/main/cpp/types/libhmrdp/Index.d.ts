@@ -41,6 +41,10 @@ export const setClipboardText: (text: string) => void;
 /** 开/关物理键盘全局拦截（把含 Win 的全键盘转发远端）。返回是否处于拦截态；
  *  需受限权限 INTERCEPT_INPUT_EVENT，未授权时恒 false（自动降级到系统键菜单/普通按键）。 */
 export const setKeyInterception: (enable: boolean) => boolean;
+/** 开/关触摸→鼠标映射（PC 上关掉避免和物理鼠标产生双击） */
+export const setTouchEnabled: (enable: boolean) => void;
+/** 鼠标滚轮（delta 正值向上，单位为标准滚轮档） */
+export const sendWheel: (delta: number, x: number, y: number) => void;
 /** 应答证书确认：0=拒绝 1=永久接受 2=仅本次接受 */
 export const respondCert: (decision: number) => void;
 /** 缩放/平移手势进行中时置 true，暂停触摸转鼠标，避免手势与点击互相干扰 */

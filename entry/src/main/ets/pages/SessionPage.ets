@@ -135,6 +135,9 @@ export struct SessionPage {
 
   aboutToAppear(): void {
     this.isPc = isPcDevice();
+    if (this.isPc) {
+      hmrdp.setTouchEnabled(false); // PC 有物理键鼠，关掉 TouchMapper 避免和鼠标回调产生双击
+    }
   }
 
   private ctx(): common.Context {
@@ -554,7 +557,7 @@ export struct SessionPage {
         }
       }
       this.toolButton(this.toolbarExpanded ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'),
-        this.toolbarExpanded ? '收起' : '菜单', false, () => {
+        this.toolbarExpanded ? '收起' : '展开', false, () => {
           this.toolbarExpanded = !this.toolbarExpanded;
         })
     }
