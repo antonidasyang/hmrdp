@@ -1,6 +1,5 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
-import { deviceInfo } from '@kit.BasicServicesKit';
 import { SessionParams } from '../model/SessionParams';
 
 // 独立会话窗口：远控会话在单独的 UIAbility 窗口里运行（与电脑列表窗口分开）。
@@ -40,18 +39,12 @@ export default class SessionAbility extends UIAbility {
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
+    // 该 Ability 在 module.json5 声明 supportWindowMode=["fullscreen"]：
+    // 2in1 上系统会将其作为全屏应用、自动开进独立桌面（对齐 OSEasy 的 VirtualAbility）。
+    // 因此这里不再 maximize（那会降级为带任务栏的最大化态，反而破坏独立桌面）。
     windowStage.loadContent('pages/SessionHost', this.storage, (err) => {
       if (err.code) {
         return;
-      }
-      // 2in1：会话窗口最大化成独立全屏窗口
-      if (deviceInfo.deviceType === '2in1' || deviceInfo.deviceType === 'pc') {
-        windowStage.getMainWindow().then((win: window.Window) => {
-          win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
-            .catch((e: Object) => {
-            });
-        }).catch((e: Object) => {
-        });
       }
     });
   }

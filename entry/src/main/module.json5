@@ -80,7 +80,10 @@
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": false,
-        "launchType": "singleton"
+        "launchType": "singleton",
+        "supportWindowMode": [
+          "fullscreen"
+        ]
       }
     ]
   }
