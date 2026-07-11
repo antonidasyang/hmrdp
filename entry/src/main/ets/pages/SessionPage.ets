@@ -624,10 +624,12 @@ export struct SessionPage {
             )
           )
           .onAxisEvent((event: AxisEvent) => {
-            // 鼠标滚轮：scrollStep 为带方向的档数（仅鼠标滚轮事件携带）。
-            // 120 = 一档（Windows WHEEL_DELTA）。远端滚动方向若反了，把 scrollStep 取负即可。
-            if (event.scrollStep !== undefined && event.scrollStep !== 0) {
-              hmrdp.sendWheel(event.scrollStep * 120, event.x, event.y);
+            // 竖向滚动轴值，带方向（鼠标滚轮与触摸板双指滚动均覆盖）。scrollStep 仅鼠标滚轮
+            // 携带、触摸板上恒正，会导致单向滚动，故改用 getVerticalAxisValue()。
+            // 120 = 一档（Windows WHEEL_DELTA）。远端方向若与手指相反，把 -v 改成 v。
+            const v = event.getVerticalAxisValue();
+            if (v !== 0) {
+              hmrdp.sendWheel(Math.trunc(-v * 120), event.x, event.y);
             }
           })
 
