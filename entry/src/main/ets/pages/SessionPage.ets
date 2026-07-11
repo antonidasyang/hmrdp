@@ -249,6 +249,7 @@ export struct SessionPage {
   /** 按本台电脑选定的文件夹解析共享盘（需权限，主页启动时申请）；未选/未授权则不挂盘 */
   private resolveShareDrives(): HmDriveEntry[] {
     const path = resolveSharePath(this.params.shareDir);
+    console.info(`HMRDP drive shareDir=${JSON.stringify(this.params.shareDir ?? {})} resolved=${path ?? '(空)'}`);
     if (!path) {
       return [];
     }

@@ -9,7 +9,7 @@ import { SessionParams } from '../model/SessionParams';
 import { PCEntry, displayName } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
 import { AccountStore } from '../model/AccountStore';
-import { DEFAULT_SHARE_DIR } from '../model/ShareFolders';
+import { DEFAULT_SHARE_DIR, shareLabel } from '../model/ShareFolders';
 import { isPcDevice } from '../model/DeviceKit';
 import { PasswordDialog } from '../components/PasswordDialog';
 import hmrdp from 'libhmrdp.so';
@@ -224,6 +224,16 @@ struct Index {
             .fontColor($r('sys.color.font_secondary'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Row({ space: 4 }) {
+            SymbolGlyph($r('sys.symbol.folder'))
+              .fontSize(13)
+              .fontColor([$r('sys.color.font_secondary')])
+            Text(shareLabel(pc.shareDir))
+              .fontSize(13)
+              .fontColor($r('sys.color.font_secondary'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)

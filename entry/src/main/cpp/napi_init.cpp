@@ -425,6 +425,11 @@ napi_value Connect(napi_env env, napi_callback_info info)
             }
         }
     }
+    HMLOGI("磁盘重定向: 收到 %{public}zu 个共享盘", config.drives.size());
+    for (size_t i = 0; i < config.drives.size(); i++) {
+        HMLOGI("  盘[%{public}zu] name=%{public}s path=%{public}s", i,
+               config.drives[i].name.c_str(), config.drives[i].path.c_str());
+    }
 
     if (config.host.empty()) {
         napi_throw_error(env, nullptr, "host 不能为空");
