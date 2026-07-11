@@ -324,11 +324,11 @@ export struct SessionPage {
     try {
       const count = data.getRecordCount();
       for (let i = 0; i < count; i++) {
-        const rec = data.getRecordAt(i);
+        const rec = data.getRecord(i);
         if (rec.mimeType === pasteboard.MIMETYPE_PIXELMAP) {
           const pm: image.PixelMap = rec.pixelMap;
           const packer = image.createImagePacker();
-          packer.packing(pm, { format: 'image/png' }).then((buf: ArrayBuffer) => {
+          packer.packToData(pm, { format: 'image/png', quality: 100 }).then((buf: ArrayBuffer) => {
             packer.release();
             const bytes = new Uint8Array(buf);
             if (bytes.length === this.clipLastImage) {
