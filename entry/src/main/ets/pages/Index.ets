@@ -354,7 +354,7 @@ struct Index {
       }
     ])
     .navDestination(this.routeMap)
-    .mode(NavigationMode.Auto)
+    .mode(NavigationMode.Stack)
     .hideNavBar(this.inSession)
   }
 }
