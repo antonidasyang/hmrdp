@@ -623,6 +623,13 @@ export struct SessionPage {
                 })
             )
           )
+          .onAxisEvent((event: AxisEvent) => {
+            // 鼠标滚轮：scrollStep 为带方向的档数（仅鼠标滚轮事件携带）。
+            // 120 = 一档（Windows WHEEL_DELTA）。远端滚动方向若反了，把 scrollStep 取负即可。
+            if (event.scrollStep !== undefined && event.scrollStep !== 0) {
+              hmrdp.sendWheel(event.scrollStep * 120, event.x, event.y);
+            }
+          })
 
         if (this.connected) {
           this.sessionToolbar()

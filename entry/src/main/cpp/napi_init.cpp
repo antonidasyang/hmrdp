@@ -33,7 +33,6 @@ napi_threadsafe_function g_stateTsfn = nullptr;
 napi_threadsafe_function g_certTsfn = nullptr;
 napi_threadsafe_function g_clipTsfn = nullptr;
 std::atomic<bool> g_keyIntercepting{ false };  // 物理键盘拦截是否生效（受限权限）
-std::atomic<bool> g_inputIntercepting{ false }; // 鼠标滚轮轴事件攔截（与键盘不同域，可并存）
 std::atomic<bool> g_touchEnabled{ true };     // 触摸→鼠标映射开关（PC 上关掉以避双击）
 
 struct StateEvent {
@@ -86,11 +85,9 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
         napi_release_threadsafe_function(certTsfn, napi_tsfn_release);
     if (clipTsfn)
         napi_release_threadsafe_function(clipTsfn, napi_tsfn_release);
-    // 断开兜底：即便 ArkTS 漏调也要释放拦截器，避免输入设备被卡住
+    // 断开兜底：即便 ArkTS 漏调也要释放键盘拦截器，避免输入设备被卡住
     if (state == SessionState::Disconnected && g_keyIntercepting.exchange(false))
         OH_Input_RemoveKeyEventInterceptor();
-    if (state == SessionState::Disconnected && g_inputIntercepting.exchange(false))
-        OH_Input_RemoveInputEventInterceptor();
     if (!tsfn)
         return;
     auto* event = new StateEvent{ static_cast<int32_t>(state), message ? message : "" };
@@ -651,26 +648,9 @@ void OnInterceptedKey(const Input_KeyEvent* keyEvent)
         g_session->SendScancode(scancode, extended, action == KEY_ACTION_DOWN);
 }
 
-// ---- 鼠标滚轮：axis 拦截器（与键盘拦截器不同事件域，可并存）----
-
-void OnInterceptedAxis(const Input_AxisEvent* axisEvent)
-{
-    if (!axisEvent)
-        return;
-    InputEvent_AxisEventType evType = AXIS_EVENT_TYPE_SCROLL;
-    if (OH_Input_GetAxisEventType(axisEvent, &evType) != INPUT_SUCCESS || evType != AXIS_EVENT_TYPE_SCROLL)
-        return;
-    double value = 0;
-    if (OH_Input_GetAxisEventAxisValue(axisEvent, AXIS_TYPE_SCROLL_VERTICAL, &value) != INPUT_SUCCESS)
-        return;
-    float dispX = 0;
-    float dispY = 0;
-    OH_Input_GetAxisEventDisplayX(axisEvent, &dispX);
-    OH_Input_GetAxisEventDisplayY(axisEvent, &dispY);
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_session)
-        g_session->SendWheel(static_cast<int32_t>(-value * 120), dispX, dispY);
-}
+// 鼠标滚轮已改由 ArkTS onAxisEvent -> sendWheel 转发（见 SessionPage.ets）。
+// 不再用 OH_Input_AddInputEventInterceptor：该拦截器一旦注册即全局消费
+// mouse/touch/axis（回调为 null 即静默丢弃），会令鼠标点击与触摸全部失效。
 
 // setTouchEnabled(enable: boolean) — PC 上关闭触摸映射，避免和物理鼠标产生双击
 napi_value SetTouchEnabled(napi_env env, napi_callback_info info)
@@ -734,25 +714,10 @@ napi_value SetKeyInterception(napi_env env, napi_callback_info info)
             g_keyIntercepting.store(true);
         else
             HMLOGW("键盘拦截未启用(rc=%{public}d)", rc);
-        // 鼠标滚轮 axis 拦截器（与键盘不同域，可并存；冲突时降级）
-        if (!g_inputIntercepting.load()) {
-            Input_InterceptorEventCallback icb = {};
-            icb.mouseCallback = nullptr; // 不拦截鼠标，让 XComponent 正常处理
-            icb.touchCallback = nullptr; // 不拦截触摸
-            icb.axisCallback = OnInterceptedAxis;
-            const Input_Result arc = OH_Input_AddInputEventInterceptor(&icb, nullptr);
-            if (arc == INPUT_SUCCESS)
-                g_inputIntercepting.store(true);
-            else
-                HMLOGW("滚轮拦截未启用(rc=%{public}d；若4200001=与键盘拦截互斥)", arc);
-        }
+        // 滚轮不再用全局拦截器（会吞掉鼠标/触摸），改由 ArkTS onAxisEvent 转发。
     } else if (!enable && g_keyIntercepting.load()) {
         OH_Input_RemoveKeyEventInterceptor();
         g_keyIntercepting.store(false);
-        if (g_inputIntercepting.load()) {
-            OH_Input_RemoveInputEventInterceptor();
-            g_inputIntercepting.store(false);
-        }
     }
 
     napi_value result = nullptr;
