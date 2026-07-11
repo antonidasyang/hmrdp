@@ -556,10 +556,19 @@ export struct SessionPage {
           })
         }
       }
-      this.toolButton(this.toolbarExpanded ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'),
-        this.toolbarExpanded ? '收起' : '展开', false, () => {
-          this.toolbarExpanded = !this.toolbarExpanded;
-        })
+      // 收起/展开：@Builder 值参不响应状态变化，故内联直接引用 toolbarExpanded
+      Column({ space: 2 }) {
+        SymbolGlyph(this.toolbarExpanded ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'))
+          .fontSize(22)
+          .fontColor([Color.White])
+        Text(this.toolbarExpanded ? '收起' : '展开')
+          .fontSize(10)
+          .fontColor(Color.White)
+      }
+      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+      .onClick(() => {
+        this.toolbarExpanded = !this.toolbarExpanded;
+      })
     }
     .backgroundColor('#B3000000')
     .borderRadius(24)
