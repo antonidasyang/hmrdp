@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "napi/native_api.h"
 #include <ace/xcomponent/native_interface_xcomponent.h>
@@ -32,6 +33,7 @@ uint64_t g_surfaceH = 0;
 napi_threadsafe_function g_stateTsfn = nullptr;
 napi_threadsafe_function g_certTsfn = nullptr;
 napi_threadsafe_function g_clipTsfn = nullptr;
+napi_threadsafe_function g_clipImageTsfn = nullptr;
 std::atomic<bool> g_keyIntercepting{ false };  // 物理键盘拦截是否生效（受限权限）
 std::atomic<bool> g_touchEnabled{ true };     // 触摸→鼠标映射开关（PC 上关掉以避双击）
 
@@ -70,6 +72,7 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
     napi_threadsafe_function tsfn = nullptr;
     napi_threadsafe_function certTsfn = nullptr;
     napi_threadsafe_function clipTsfn = nullptr;
+    napi_threadsafe_function clipImageTsfn = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         tsfn = g_stateTsfn;
@@ -79,12 +82,16 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
             g_certTsfn = nullptr;
             clipTsfn = g_clipTsfn;
             g_clipTsfn = nullptr;
+            clipImageTsfn = g_clipImageTsfn;
+            g_clipImageTsfn = nullptr;
         }
     }
     if (certTsfn)
         napi_release_threadsafe_function(certTsfn, napi_tsfn_release);
     if (clipTsfn)
         napi_release_threadsafe_function(clipTsfn, napi_tsfn_release);
+    if (clipImageTsfn)
+        napi_release_threadsafe_function(clipImageTsfn, napi_tsfn_release);
     // 断开兜底：即便 ArkTS 漏调也要释放键盘拦截器，避免输入设备被卡住
     if (state == SessionState::Disconnected && g_keyIntercepting.exchange(false))
         OH_Input_RemoveKeyEventInterceptor();
@@ -177,6 +184,41 @@ void OnClipboardText(const char* utf8Text, void* /*userData*/)
     auto* text = new std::string(utf8Text ? utf8Text : "");
     if (napi_call_threadsafe_function(tsfn, text, napi_tsfn_blocking) != napi_ok)
         delete text;
+}
+
+// ---- TSFN: 远端剪贴板图片(PNG) -> ArkTS ----
+
+void CallJsClipImageCallback(napi_env env, napi_value jsCallback, void* /*context*/, void* data)
+{
+    std::unique_ptr<std::vector<uint8_t>> png(static_cast<std::vector<uint8_t>*>(data));
+    if (!env || !jsCallback || !png || png->empty())
+        return;
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    napi_value arraybuffer = nullptr;
+    void* outBuf = nullptr;
+    if (napi_create_arraybuffer(env, png->size(), &outBuf, &arraybuffer) != napi_ok)
+        return;
+    memcpy(outBuf, png->data(), png->size());
+    napi_value uint8 = nullptr;
+    if (napi_create_typedarray(env, napi_uint8_array, png->size(), arraybuffer, 0, &uint8) != napi_ok)
+        return;
+    napi_value args[1] = { uint8 };
+    napi_call_function(env, undefined, jsCallback, 1, args, nullptr);
+}
+
+void OnClipboardImage(const uint8_t* data, size_t len, void* /*userData*/)
+{
+    napi_threadsafe_function tsfn = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        tsfn = g_clipImageTsfn;
+    }
+    if (!tsfn || !data || len == 0)
+        return;
+    auto* png = new std::vector<uint8_t>(data, data + len);
+    if (napi_call_threadsafe_function(tsfn, png, napi_tsfn_blocking) != napi_ok)
+        delete png;
 }
 
 // ---- XComponent 回调（UI 线程）----
@@ -341,13 +383,13 @@ napi_value GetVersion(napi_env env, napi_callback_info /*info*/)
 
 napi_value Connect(napi_env env, napi_callback_info info)
 {
-    size_t argc = 4;
-    napi_value args[4] = {};
+    size_t argc = 5;
+    napi_value args[5] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     napi_value result = nullptr;
     if (argc < 3) {
-        napi_throw_error(env, nullptr, "connect(config, onState, onCert[, onClip]) 需要至少 3 个参数");
+        napi_throw_error(env, nullptr, "connect(config, onState, onCert[, onClip[, onClipImage]]) 需要至少 3 个参数");
         return result;
     }
 
@@ -395,6 +437,7 @@ napi_value Connect(napi_env env, napi_callback_info info)
     napi_threadsafe_function oldState = nullptr;
     napi_threadsafe_function oldCert = nullptr;
     napi_threadsafe_function oldClip = nullptr;
+    napi_threadsafe_function oldClipImage = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_session && g_session->IsRunning()) {
@@ -405,9 +448,11 @@ napi_value Connect(napi_env env, napi_callback_info info)
         oldState = g_stateTsfn;
         oldCert = g_certTsfn;
         oldClip = g_clipTsfn;
+        oldClipImage = g_clipImageTsfn;
         g_stateTsfn = nullptr;
         g_certTsfn = nullptr;
         g_clipTsfn = nullptr;
+        g_clipImageTsfn = nullptr;
     }
     if (oldSession) {
         oldSession->RequestStop();
@@ -420,6 +465,8 @@ napi_value Connect(napi_env env, napi_callback_info info)
         napi_release_threadsafe_function(oldCert, napi_tsfn_release);
     if (oldClip)
         napi_release_threadsafe_function(oldClip, napi_tsfn_release);
+    if (oldClipImage)
+        napi_release_threadsafe_function(oldClipImage, napi_tsfn_release);
 
     std::lock_guard<std::mutex> lock(g_mutex);
 
@@ -450,10 +497,23 @@ napi_value Connect(napi_env env, napi_callback_info info)
                 g_clipTsfn = nullptr;
         }
     }
+    // 图片剪贴板回调（可选第 5 参）：失败仅降级，不影响连接
+    if (argc >= 5) {
+        napi_valuetype vt = napi_undefined;
+        napi_typeof(env, args[4], &vt);
+        if (vt == napi_function) {
+            napi_create_string_utf8(env, "hmrdpClipImage", NAPI_AUTO_LENGTH, &resourceName);
+            if (napi_create_threadsafe_function(env, args[4], nullptr, resourceName, 0, 1, nullptr,
+                                                nullptr, nullptr, CallJsClipImageCallback,
+                                                &g_clipImageTsfn) != napi_ok)
+                g_clipImageTsfn = nullptr;
+        }
+    }
 
     g_session = std::make_unique<RdpSession>(std::move(config), OnSessionState, nullptr);
     g_session->SetCertCallback(OnCertRequest, nullptr);
     g_session->SetClipCallback(OnClipboardText, nullptr);
+    g_session->SetClipImageCallback(OnClipboardImage, nullptr);
     if (g_window)
         g_session->AttachWindow(g_window, g_surfaceW, g_surfaceH);
 
@@ -467,6 +527,10 @@ napi_value Connect(napi_env env, napi_callback_info info)
         if (g_clipTsfn) {
             napi_release_threadsafe_function(g_clipTsfn, napi_tsfn_release);
             g_clipTsfn = nullptr;
+        }
+        if (g_clipImageTsfn) {
+            napi_release_threadsafe_function(g_clipImageTsfn, napi_tsfn_release);
+            g_clipImageTsfn = nullptr;
         }
     }
     napi_get_boolean(env, ok, &result);
@@ -629,6 +693,46 @@ napi_value SetClipboardText(napi_env env, napi_callback_info info)
     return undefined;
 }
 
+// setClipboardImage(bytes: Uint8Array) - 本地剪贴板图片(PNG)变更，向远端广告图片格式
+napi_value SetClipboardImage(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 1) {
+        size_t offset = 0;
+        size_t len = 0;
+        void* data = nullptr;
+        napi_valuetype vt = napi_undefined;
+        napi_typeof(env, args[0], &vt);
+        if (vt == napi_object) {
+            bool isView = false;
+            napi_is_typedarray(env, args[0], &isView);
+            if (isView) {
+                napi_typedarray_type type = napi_uint8_array;
+                size_t byteLength = 0;
+                napi_value ab = nullptr;
+                if (napi_get_typedarray_info(env, args[0], &type, &byteLength, &data, &ab, &offset) == napi_ok &&
+                    type == napi_uint8_array)
+                    len = byteLength;
+            } else {
+                bool isAb = false;
+                napi_is_arraybuffer(env, args[0], &isAb);
+                if (isAb && napi_get_arraybuffer_info(env, args[0], &data, &len) == napi_ok)
+                    offset = 0;
+            }
+        }
+        if (data && len > 0) {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (g_session)
+                g_session->SetLocalClipboardImage(static_cast<const uint8_t*>(data) + offset, len);
+        }
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // ---- 物理键盘拦截（受限权限 INTERCEPT_INPUT_EVENT）----
 // 拦截器全局生效、消费按键；会话聚焦时开启，把含 Win 的全键盘转发远端，失焦/断开时关闭。
 void OnInterceptedKey(const Input_KeyEvent* keyEvent)
@@ -752,6 +856,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "setTouchMode", nullptr, SetTouchMode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setClipboardImage", nullptr, SetClipboardImage, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setKeyInterception", nullptr, SetKeyInterception, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setTouchEnabled", nullptr, SetTouchEnabled, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sendWheel", nullptr, SendWheel, nullptr, nullptr, nullptr, napi_default, nullptr },

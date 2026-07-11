@@ -30,14 +30,18 @@ export interface CertRequest {
  * state: 0 连接中 / 1 已连接 / 2 已断开（message 为错误信息，正常断开为空）
  * onCert: 服务器证书需要确认时回调，必须调用 respondCert() 应答，否则 120s 后按拒绝处理
  * onClip: （可选）远端剪贴板文本变更时回调，用于写入本地系统剪贴板
+ * onClipImage: （可选）远端剪贴板图片(PNG)变更时回调，bytes 为 PNG 字节
  */
 export const connect: (config: ConnectConfig, onState: (state: number, message: string) => void,
-  onCert: (request: CertRequest) => void, onClip?: (text: string) => void) => boolean;
+  onCert: (request: CertRequest) => void, onClip?: (text: string) => void,
+  onClipImage?: (bytes: Uint8Array) => void) => boolean;
 export const disconnect: () => void;
 /** 动态分辨率：请求远端桌面尺寸（一般由原生随 surface 变化自动调用） */
 export const requestResize: (width: number, height: number) => void;
 /** 本地剪贴板文本变更时调用，向远端广告文本格式 */
 export const setClipboardText: (text: string) => void;
+/** 本地剪贴板图片变更时调用（PNG 字节），向远端广告图片格式 */
+export const setClipboardImage: (bytes: Uint8Array) => void;
 /** 开/关物理键盘全局拦截（把含 Win 的全键盘转发远端）。返回是否处于拦截态；
  *  需受限权限 INTERCEPT_INPUT_EVENT，未授权时恒 false（自动降级到系统键菜单/普通按键）。 */
 export const setKeyInterception: (enable: boolean) => boolean;

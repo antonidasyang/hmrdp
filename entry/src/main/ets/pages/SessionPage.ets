@@ -3,6 +3,7 @@ import { inputMethod } from '@kit.IMEKit';
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { Environment } from '@kit.CoreFileKit';
+import { image } from '@kit.ImageKit';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
@@ -131,6 +132,7 @@ export struct SessionPage {
   private imeAttached: boolean = false;
   // 剪贴板同步（防回环：两端最近一次同步的文本）
   private clipLast: string = '';
+  private clipLastImage: number = 0; // 本地图片去重（PNG 字节长度）
   private clipListening: boolean = false;
   private clipSelfWrite: boolean = false; // 刚由远端写入本地，跳过下一次读取回声
   private clipUpdateHandler: () => void = () => {
@@ -304,6 +306,7 @@ export struct SessionPage {
     }
     try {
       pasteboard.getSystemPasteboard().getData().then((data: pasteboard.PasteData) => {
+        this.maybeSendImage(data); // 图片优先：有 PixelMap 记录则编码 PNG 推远端
         const text = data.getPrimaryText();
         if (!text || text === this.clipLast) {
           return;
@@ -312,6 +315,34 @@ export struct SessionPage {
         hmrdp.setClipboardText(text);
       }).catch(() => {
       });
+    } catch (e) {
+    }
+  }
+
+  /** 本地剪贴板图片 -> 编码 PNG 推给远端（仅处理首个 PixelMap 记录） */
+  private maybeSendImage(data: pasteboard.PasteData): void {
+    try {
+      const count = data.getRecordCount();
+      for (let i = 0; i < count; i++) {
+        const rec = data.getRecordAt(i);
+        if (rec.mimeType === pasteboard.MIMETYPE_PIXELMAP) {
+          const pm: image.PixelMap = rec.pixelMap;
+          const packer = image.createImagePacker();
+          packer.packing(pm, { format: 'image/png' }).then((buf: ArrayBuffer) => {
+            packer.release();
+            const bytes = new Uint8Array(buf);
+            if (bytes.length === this.clipLastImage) {
+              return; // 同尺寸，视为重复
+            }
+            this.clipLastImage = bytes.length;
+            this.clipLast = ''; // 新图片到来，清空文本去重避免误判
+            hmrdp.setClipboardImage(bytes);
+          }).catch(() => {
+            packer.release();
+          });
+          return;
+        }
+      }
     } catch (e) {
     }
   }
@@ -327,6 +358,31 @@ export struct SessionPage {
       const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
       pasteboard.getSystemPasteboard().setData(data).catch(() => {
         this.clipSelfWrite = false;
+      });
+    } catch (e) {
+      this.clipSelfWrite = false;
+    }
+  }
+
+  /** 远端剪贴板图片(PNG) -> 解码为 PixelMap 写入本地系统剪贴板 */
+  private onClipImageFromRemote(bytes: Uint8Array): void {
+    if (!bytes || bytes.length === 0) {
+      return;
+    }
+    this.clipSelfWrite = true;
+    this.clipLastImage = bytes.length;
+    this.clipLast = '';
+    try {
+      const source = image.createImageSource(bytes.buffer);
+      source.createPixelMap().then((pm: image.PixelMap) => {
+        const data = pasteboard.createData(pasteboard.MIMETYPE_PIXELMAP, pm);
+        pasteboard.getSystemPasteboard().setData(data).catch(() => {
+          this.clipSelfWrite = false;
+        });
+        source.release();
+      }).catch(() => {
+        this.clipSelfWrite = false;
+        source.release();
       });
     } catch (e) {
       this.clipSelfWrite = false;
@@ -461,6 +517,8 @@ export struct SessionPage {
       this.onCertRequest(request);
     }, (text: string) => {
       this.onClipFromRemote(text);
+    }, (bytes: Uint8Array) => {
+      this.onClipImageFromRemote(bytes);
     });
     if (!ok) {
       this.errorText = '无法启动会话（可能已有连接未结束）';

@@ -59,14 +59,19 @@ using CertCallback = void (*)(const CertInfo& info, void* userData);
 
 // 远端剪贴板文本 -> ArkTS（RDP 线程调用，实现方负责线程安全）
 using ClipCallback = void (*)(const char* utf8Text, void* userData);
+// 远端剪贴板图片(PNG) -> ArkTS（RDP 线程调用，实现方负责线程安全）
+using ClipImageCallback = void (*)(const uint8_t* data, size_t len, void* userData);
 
 class RdpSession {
 public:
     RdpSession(SessionConfig config, StateCallback cb, void* cbUserData);
     void SetCertCallback(CertCallback cb, void* userData);
     void SetClipCallback(ClipCallback cb, void* userData);
+    void SetClipImageCallback(ClipImageCallback cb, void* userData);
     // ArkTS：本地剪贴板文本变更时调用（任意线程），触发向远端广告文本格式
     void SetLocalClipboardText(const char* utf8Text);
+    // ArkTS：本地剪贴板图片变更时调用（任意线程，PNG 字节），触发向远端广告图片格式
+    void SetLocalClipboardImage(const uint8_t* pngData, size_t len);
     ~RdpSession();
 
     RdpSession(const RdpSession&) = delete;
@@ -122,7 +127,9 @@ public:
     // 以下供 cliprdr 静态回调使用（均在 RDP 线程）
     void SendClipboardFormatList();                       // 向远端广告本地格式
     bool CopyLocalClipboardUtf8(std::string& out);        // 取本地剪贴板文本（UTF-8）
+    bool CopyLocalClipboardImage(std::vector<uint8_t>& out); // 取本地剪贴板图片(PNG)
     void DeliverRemoteClipboard(const std::string& utf8); // 远端文本 -> ArkTS
+    void DeliverRemoteClipboardImage(const uint8_t* data, size_t len); // 远端图片 -> ArkTS
     CliprdrClientContext* Cliprdr() const { return cliprdr_; }
     const SessionConfig& Config() const { return config_; }
     freerdp* Instance() const { return instance_; }
@@ -180,9 +187,13 @@ private:
     std::mutex clipMutex_;
     std::string localClipUtf8_;
     bool haveLocalClip_ = false;
+    std::vector<uint8_t> localClipImagePng_; // 本地剪贴板图片(PNG)
+    bool haveLocalClipImage_ = false;
     std::atomic<bool> advertisePending_{ false };
     ClipCallback clipCb_ = nullptr;
     void* clipCbUserData_ = nullptr;
+    ClipImageCallback clipImageCb_ = nullptr;
+    void* clipImageCbUserData_ = nullptr;
 
     // 脏区累积（仅 RDP 线程访问）
     bool presentPending_ = false;

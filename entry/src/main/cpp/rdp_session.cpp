@@ -3,6 +3,7 @@
 #include <poll.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <strings.h>
 
 #include <cstring>
 
@@ -74,7 +75,12 @@ BOOL HmDesktopResize(rdpContext* context)
     return TRUE;
 }
 
-// ---- 剪贴板：UTF-8 <-> CF_UNICODETEXT(UTF-16LE) ----
+// ---- 剪贴板：UTF-8 <-> CF_UNICODETEXT(UTF-16LE) + PNG 图片 ----
+
+// 本地广告 PNG 时用的注册格式 id（哨兵；远端按 formatName="PNG" 识别回此 id 请求）
+constexpr UINT32 kClipPngFormatId = 0xC000u;
+// PNG 签名，用于识别远端 FormatDataResponse 是否为图片（文本是 UTF-16，不会撞）
+constexpr uint8_t kPngSig[] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
 
 std::vector<uint8_t> Utf8ToCfUnicode(const std::string& utf8)
 {
@@ -141,18 +147,28 @@ UINT HmCliprdrServerFormatList(CliprdrClientContext* context, const CLIPRDR_FORM
     CLIPRDR_FORMAT_LIST_RESPONSE resp = {};
     resp.common.msgFlags = CB_RESPONSE_OK;
     context->ClientFormatListResponse(context, &resp);
-    // 服务端有文本 -> 请求 CF_UNICODETEXT
+    // 优先文本；无文本再看图片（PNG 优先；CF_DIB 兜底首版未实现转换，暂不请求）。
+    // 每次只请求一种格式，响应用 PNG 签名探测分发，无需状态跟踪。
     bool hasText = false;
+    UINT32 pngId = 0;
+    bool hasPng = false;
     for (UINT32 i = 0; i < list->numFormats; i++) {
         const UINT32 id = list->formats[i].formatId;
         if (id == CF_UNICODETEXT || id == CF_TEXT || id == CF_OEMTEXT) {
             hasText = true;
-            break;
+        } else if (list->formats[i].formatName &&
+                   strcasecmp(list->formats[i].formatName, "PNG") == 0) {
+            pngId = id;
+            hasPng = true;
         }
     }
     if (hasText) {
         CLIPRDR_FORMAT_DATA_REQUEST req = {};
         req.requestedFormatId = CF_UNICODETEXT;
+        context->ClientFormatDataRequest(context, &req);
+    } else if (hasPng) {
+        CLIPRDR_FORMAT_DATA_REQUEST req = {};
+        req.requestedFormatId = pngId;
         context->ClientFormatDataRequest(context, &req);
     }
     return CHANNEL_RC_OK;
@@ -167,6 +183,9 @@ UINT HmCliprdrServerFormatDataRequest(CliprdrClientContext* context,
         std::string u8;
         if (session->CopyLocalClipboardUtf8(u8))
             bytes = Utf8ToCfUnicode(u8);
+    } else if (req->requestedFormatId == kClipPngFormatId) {
+        // 远端请求我们广告的 PNG 图片
+        session->CopyLocalClipboardImage(bytes);
     }
     CLIPRDR_FORMAT_DATA_RESPONSE resp = {};
     if (!bytes.empty()) {
@@ -183,9 +202,16 @@ UINT HmCliprdrServerFormatDataResponse(CliprdrClientContext* context,
                                        const CLIPRDR_FORMAT_DATA_RESPONSE* resp)
 {
     RdpSession* session = reinterpret_cast<RdpSession*>(context->custom);
-    if ((resp->common.msgFlags & CB_RESPONSE_OK) && resp->requestedFormatData &&
-        resp->common.dataLen >= sizeof(WCHAR)) {
-        const std::string u8 = CfUnicodeToUtf8(resp->requestedFormatData, resp->common.dataLen);
+    if (!(resp->common.msgFlags & CB_RESPONSE_OK) || !resp->requestedFormatData ||
+        resp->common.dataLen == 0)
+        return CHANNEL_RC_OK;
+    const BYTE* data = resp->requestedFormatData;
+    const UINT32 len = resp->common.dataLen;
+    // PNG 图片响应（数据以 PNG 签名开头）；否则按文本（CF_UNICODETEXT UTF-16LE）
+    if (len >= sizeof(kPngSig) && memcmp(data, kPngSig, sizeof(kPngSig)) == 0) {
+        session->DeliverRemoteClipboardImage(data, len);
+    } else if (len >= sizeof(WCHAR)) {
+        const std::string u8 = CfUnicodeToUtf8(data, len);
         if (!u8.empty())
             session->DeliverRemoteClipboard(u8);
     }
@@ -641,6 +667,12 @@ void RdpSession::SetClipCallback(ClipCallback cb, void* userData)
     clipCbUserData_ = userData;
 }
 
+void RdpSession::SetClipImageCallback(ClipImageCallback cb, void* userData)
+{
+    clipImageCb_ = cb;
+    clipImageCbUserData_ = userData;
+}
+
 void RdpSession::SetLocalClipboardText(const char* utf8Text)
 {
     {
@@ -651,6 +683,23 @@ void RdpSession::SetLocalClipboardText(const char* utf8Text)
     advertisePending_.store(true);
     if (inputSignal_)
         SetEvent(inputSignal_); // 唤醒事件循环，在 RDP 线程内广告
+}
+
+void RdpSession::SetLocalClipboardImage(const uint8_t* pngData, size_t len)
+{
+    {
+        std::lock_guard<std::mutex> lock(clipMutex_);
+        if (pngData && len > 0) {
+            localClipImagePng_.assign(pngData, pngData + len);
+            haveLocalClipImage_ = true;
+        } else {
+            localClipImagePng_.clear();
+            haveLocalClipImage_ = false;
+        }
+    }
+    advertisePending_.store(true);
+    if (inputSignal_)
+        SetEvent(inputSignal_);
 }
 
 void RdpSession::OnCliprdrConnected(CliprdrClientContext* cliprdr)
@@ -675,17 +724,29 @@ void RdpSession::SendClipboardFormatList()
 {
     if (!cliprdr_ || !cliprdr_->ClientFormatList)
         return;
-    bool have = false;
+    bool haveText = false;
+    bool haveImage = false;
     {
         std::lock_guard<std::mutex> lock(clipMutex_);
-        have = haveLocalClip_;
+        haveText = haveLocalClip_;
+        haveImage = haveLocalClipImage_;
     }
-    CLIPRDR_FORMAT fmt = {};
-    fmt.formatId = CF_UNICODETEXT;
-    fmt.formatName = nullptr;
+    char pngName[] = "PNG"; // 栈上即可，ClientFormatList 同步消费
+    CLIPRDR_FORMAT fmts[2] = {};
+    uint32_t n = 0;
+    if (haveText) {
+        fmts[n].formatId = CF_UNICODETEXT;
+        fmts[n].formatName = nullptr;
+        n++;
+    }
+    if (haveImage) {
+        fmts[n].formatId = kClipPngFormatId;
+        fmts[n].formatName = pngName;
+        n++;
+    }
     CLIPRDR_FORMAT_LIST list = {};
-    list.numFormats = have ? 1u : 0u;
-    list.formats = have ? &fmt : nullptr;
+    list.numFormats = n;
+    list.formats = n > 0 ? fmts : nullptr;
     cliprdr_->ClientFormatList(cliprdr_, &list);
 }
 
@@ -698,10 +759,25 @@ bool RdpSession::CopyLocalClipboardUtf8(std::string& out)
     return true;
 }
 
+bool RdpSession::CopyLocalClipboardImage(std::vector<uint8_t>& out)
+{
+    std::lock_guard<std::mutex> lock(clipMutex_);
+    if (!haveLocalClipImage_)
+        return false;
+    out = localClipImagePng_;
+    return true;
+}
+
 void RdpSession::DeliverRemoteClipboard(const std::string& utf8)
 {
     if (clipCb_)
         clipCb_(utf8.c_str(), clipCbUserData_);
+}
+
+void RdpSession::DeliverRemoteClipboardImage(const uint8_t* data, size_t len)
+{
+    if (clipImageCb_ && data && len > 0)
+        clipImageCb_(data, len, clipImageCbUserData_);
 }
 
 void RdpSession::AdvertiseClipboardIfPending()
