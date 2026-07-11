@@ -2,8 +2,8 @@ import { display, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
-import { Environment } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
+import { resolveSharePath, SHARE_TARGETS } from '../model/ShareFolders';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
@@ -246,30 +246,14 @@ export struct SessionPage {
     }
   }
 
-  /** 按本台电脑勾选的目录解析共享盘（需权限，在主页启动时申请）；未选/未授权则不挂盘 */
+  /** 按本台电脑选定的文件夹解析共享盘（需权限，主页启动时申请）；未选/未授权则不挂盘 */
   private resolveShareDrives(): HmDriveEntry[] {
-    const drives: HmDriveEntry[] = [];
-    const dirs = this.params.shareDirs;
-    if (dirs.includes('download')) {
-      try {
-        const dl = Environment.getUserDownloadDir();
-        if (dl && dl.length > 0) {
-          drives.push({ name: '下载', path: dl });
-        }
-      } catch (e) {
-        // 未授权：getUserDownloadDir 抛异常，跳过
-      }
+    const path = resolveSharePath(this.params.shareDir);
+    if (!path) {
+      return [];
     }
-    if (dirs.includes('documents')) {
-      try {
-        const doc = Environment.getUserDocumentDir();
-        if (doc && doc.length > 0) {
-          drives.push({ name: '文档', path: doc });
-        }
-      } catch (e) {
-      }
-    }
-    return drives;
+    const t = SHARE_TARGETS.find((x) => x.key === (this.params.shareDir?.base ?? ''));
+    return [{ name: t ? t.label : '共享', path: path }];
   }
 
   // ---- 共享剪贴板（cliprdr 桥接系统剪贴板）----
@@ -514,7 +498,7 @@ export struct SessionPage {
       height: initH,
       scale: scale,
       dynamic: dynamic ? 1 : 0,
-      drives: this.resolveShareDrives() // 磁盘重定向：下载/文档目录挂成远端网络盘
+      drives: this.resolveShareDrives() // 磁盘重定向：选定的本地文件夹挂成远端网络盘
     };
     this.errorText = '';
     this.statusText = '正在连接…';

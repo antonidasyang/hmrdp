@@ -1,6 +1,7 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { SessionParams } from '../model/SessionParams';
+import { ShareDir } from '../model/ShareFolders';
 
 // 独立会话窗口：远控会话在单独的 UIAbility 窗口里运行（与电脑列表窗口分开）。
 // 2in1 上默认最大化成独立全屏窗口。参数经 want.parameters 传入、LocalStorage 传给页面。
@@ -31,8 +32,17 @@ export default class SessionAbility extends UIAbility {
     sp.height = (p['height'] as number) ?? 0;
     sp.scale = (p['scale'] as number) ?? 0;
     sp.fullscreen = (p['fullscreen'] as boolean) ?? false;
-    const dirs = (p['shareDirs'] as string) ?? '';
-    sp.shareDirs = dirs.length > 0 ? dirs.split(',') : [];
+    const sd = (p['shareDir'] as string) ?? '';
+    if (sd.length > 0) {
+      try {
+        const obj = JSON.parse(sd) as ShareDir;
+        sp.shareDir = { base: obj.base, sub: obj.sub };
+      } catch (e) {
+        sp.shareDir = undefined;
+      }
+    } else {
+      sp.shareDir = undefined;
+    }
     sp.standalone = true;
     this.storage.setOrCreate('sessionParams', sp);
     this.storage.setOrCreate('sessionEpoch', Date.now());

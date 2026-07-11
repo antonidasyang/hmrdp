@@ -1,4 +1,6 @@
 // 已保存的电脑条目（可 JSON 序列化的纯数据）
+import { ShareDir } from './ShareFolders';
+
 export interface PCEntry {
   id: string;
   /** 友好名称，空则显示 host */
@@ -17,8 +19,8 @@ export interface PCEntry {
   scale: number;
   /** 进入会话即切全屏（沉浸式），常配合动态分辨率 */
   fullscreen?: boolean;
-  /** 共享给远程的本地目录 key 列表（见 ShareFolders）；undefined = 默认全部 */
-  shareDirs?: string[];
+  /** 共享给远程的本地文件夹（见 ShareFolders）；undefined = 默认下载根 */
+  shareDir?: ShareDir;
   createdAt: number;
   lastUsedAt: number;
 }

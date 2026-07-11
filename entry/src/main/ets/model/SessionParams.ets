@@ -1,4 +1,6 @@
 // 会话页入参（NavPathStack param）
+import { ShareDir } from './ShareFolders';
+
 export class SessionParams {
   host: string = '';
   port: number = 3389;
@@ -12,8 +14,8 @@ export class SessionParams {
   scale: number = 0;
   /** 进入会话即切全屏（沉浸式） */
   fullscreen: boolean = false;
-  /** 共享给远程的本地目录 key 列表（见 ShareFolders） */
-  shareDirs: string[] = [];
+  /** 共享给远程的本地文件夹（见 ShareFolders）；undefined = 默认下载根 */
+  shareDir?: ShareDir;
   /** 是否在独立会话窗口(SessionAbility)中运行；true 时断开=关闭该窗口 */
   standalone: boolean = false;
 

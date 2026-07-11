@@ -5,7 +5,8 @@ import { PCStore } from '../model/PCStore';
 import { AccountEntry, accountDisplay } from '../model/AccountEntry';
 import { AccountStore } from '../model/AccountStore';
 import { EditAccountParams } from './EditAccountPage';
-import { SHARE_TARGETS, ShareTarget, DEFAULT_SHARE_DIRS } from '../model/ShareFolders';
+import { ShareDir, DEFAULT_SHARE_DIR, shareLabel } from '../model/ShareFolders';
+import { FolderBrowser } from '../components/FolderBrowser';
 
 export class EditPCParams {
   /** 空串 = 新建 */
@@ -54,15 +55,30 @@ export struct EditPCPage {
   @State resolutionIndex: number = 0;
   @State scaleIndex: number = 0;
   @State editingId: string = '';
-  @State shareDirs: string[] = [...DEFAULT_SHARE_DIRS];
+  @State shareDir: ShareDir | undefined = { base: DEFAULT_SHARE_DIR.base, sub: DEFAULT_SHARE_DIR.sub };
   @State accounts: AccountEntry[] = [];
   /** 选中的已保存账号 id；'' = 手动输入 */
   @State accountId: string = '';
   @StorageProp('accountsVersion') @Watch('reloadAccounts') accountsVersion: number = 0;
   private pathStack: NavPathStack | null = null;
+  private folderController: CustomDialogController | null = null;
 
   private ctx(): common.Context {
     return this.getUIContext().getHostContext()!;
+  }
+
+  private openFolderPicker(): void {
+    this.folderController = new CustomDialogController({
+      builder: FolderBrowser({
+        init: this.shareDir ?? { base: DEFAULT_SHARE_DIR.base, sub: DEFAULT_SHARE_DIR.sub },
+        onConfirm: (d: ShareDir | undefined) => {
+          this.shareDir = d;
+        }
+      }),
+      alignment: DialogAlignment.Center,
+      customStyle: true
+    });
+    this.folderController.open();
   }
 
   reloadAccounts(): void {
@@ -109,7 +125,8 @@ export struct EditPCPage {
     this.username = pc.username;
     this.hasSavedPassword = pc.hasPassword;
     this.accountId = pc.accountId ?? '';
-    this.shareDirs = pc.shareDirs ? [...pc.shareDirs] : [...DEFAULT_SHARE_DIRS];
+    this.shareDir = pc.shareDir ? { base: pc.shareDir.base, sub: pc.shareDir.sub } :
+      { base: DEFAULT_SHARE_DIR.base, sub: DEFAULT_SHARE_DIR.sub };
     const pcFull = pc.fullscreen === true;
     this.resolutionIndex = Math.max(0, RESOLUTIONS.findIndex((r) =>
       r.width === pc.width && r.height === pc.height && (r.fullscreen === true) === pcFull));
@@ -168,7 +185,7 @@ export struct EditPCPage {
       height: RESOLUTIONS[this.resolutionIndex].height,
       scale: SCALES[this.scaleIndex].value,
       fullscreen: RESOLUTIONS[this.resolutionIndex].fullscreen === true,
-      shareDirs: this.shareDirs,
+      shareDir: this.shareDir,
       createdAt: old?.createdAt ?? Date.now(),
       lastUsedAt: old?.lastUsedAt ?? 0
     };
@@ -210,23 +227,27 @@ export struct EditPCPage {
   }
 
   @Builder
-  shareRow(t: ShareTarget) {
+  shareFolderRow() {
     Row() {
-      Text(t.label)
-        .fontSize(15)
-      Blank()
-      Toggle({ type: ToggleType.Switch, isOn: this.shareDirs.includes(t.key) })
-        .onChange((isOn: boolean) => {
-          if (isOn) {
-            if (!this.shareDirs.includes(t.key)) {
-              this.shareDirs = this.shareDirs.concat([t.key]);
-            }
-          } else {
-            this.shareDirs = this.shareDirs.filter((k) => k !== t.key);
-          }
-        })
+      Column({ space: 4 }) {
+        Text('共享文件夹')
+          .fontSize(15)
+        Text(shareLabel(this.shareDir))
+          .fontSize(12)
+          .fontColor('#888888')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Text('更改')
+        .fontSize(14)
+        .fontColor('#4DA3FF')
     }
     .width('100%')
+    .height(56)
+    .padding({ left: 0, right: 0 })
+    .onClick(() => this.openFolderPicker())
   }
 
   build() {
@@ -325,9 +346,7 @@ export struct EditPCPage {
           .width('100%')
 
           this.sectionTitle('共享文件夹（挂到远程电脑，需允许文件访问）')
-          ForEach(SHARE_TARGETS, (t: ShareTarget) => {
-            this.shareRow(t)
-          }, (t: ShareTarget) => t.key)
+          this.shareFolderRow()
 
           Button('保存')
             .width('100%')

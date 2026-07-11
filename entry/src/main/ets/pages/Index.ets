@@ -9,7 +9,7 @@ import { SessionParams } from '../model/SessionParams';
 import { PCEntry, displayName } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
 import { AccountStore } from '../model/AccountStore';
-import { DEFAULT_SHARE_DIRS } from '../model/ShareFolders';
+import { DEFAULT_SHARE_DIR } from '../model/ShareFolders';
 import { isPcDevice } from '../model/DeviceKit';
 import { PasswordDialog } from '../components/PasswordDialog';
 import hmrdp from 'libhmrdp.so';
@@ -45,11 +45,12 @@ struct Index {
     this.requestFilePermissions();
   }
 
-  /** 申请「下载/文档」目录读写权限，用于会话内把这两个目录共享给远程电脑做文件互传 */
+  /** 申请「下载/文档/桌面」目录读写权限，用于会话内把本地目录共享给远程电脑做文件互传 */
   private requestFilePermissions(): void {
     const perms: Permissions[] = [
       'ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY',
-      'ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY'
+      'ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY',
+      'ohos.permission.READ_WRITE_DESKTOP_DIRECTORY'
     ];
     try {
       abilityAccessCtrl.createAtManager()
@@ -73,7 +74,7 @@ struct Index {
     params.height = pc.height;
     params.scale = pc.scale;
     params.fullscreen = pc.fullscreen === true;
-    params.shareDirs = pc.shareDirs ?? DEFAULT_SHARE_DIRS;
+    params.shareDir = pc.shareDir ?? DEFAULT_SHARE_DIR;
     if (isPcDevice()) {
       this.launchSessionWindow(params); // PC：开独立全屏会话窗口
     } else {
@@ -98,7 +99,7 @@ struct Index {
         height: params.height,
         scale: params.scale,
         fullscreen: params.fullscreen,
-        shareDirs: params.shareDirs.join(',')
+        shareDir: params.shareDir ? JSON.stringify(params.shareDir) : ''
       }
     };
     // 以全屏窗口模式启动，尽量让会话窗口成为独立全屏形态（2in1）
