@@ -84,6 +84,29 @@ const STATE_CONNECTED = 1;
 const STATE_DISCONNECTED = 2;
 
 @Component
+struct ToolButton {
+  // 用 @Component + @Prop 而非 @Builder：ArkUI V1 中 @Builder 值参不响应状态变化，
+  // 会导致按钮图标/文字/激活色在状态切换后不刷新。@Prop 单向同步是响应式的。
+  @Prop symbol: Resource = $r('sys.symbol.xmark');
+  @Prop label: string = '';
+  @Prop active: boolean = false;
+  action: () => void = () => {};
+
+  build() {
+    Column({ space: 2 }) {
+      SymbolGlyph(this.symbol)
+        .fontSize(22)
+        .fontColor([this.active ? '#4DA3FF' : Color.White])
+      Text(this.label)
+        .fontSize(10)
+        .fontColor(this.active ? '#4DA3FF' : Color.White)
+    }
+    .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+    .onClick(() => { this.action(); })
+  }
+}
+
+@Component
 export struct SessionPage {
   @State statusText: string = '正在连接…';
   @State connected: boolean = false;
@@ -493,43 +516,30 @@ export struct SessionPage {
   }
 
   @Builder
-  toolButton(symbol: Resource, label: string, active: boolean, action: () => void) {
-    Column({ space: 2 }) {
-      SymbolGlyph(symbol)
-        .fontSize(22)
-        .fontColor([active ? '#4DA3FF' : Color.White])
-      Text(label)
-        .fontSize(10)
-        .fontColor(active ? '#4DA3FF' : Color.White)
-    }
-    .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-    .onClick(action)
-  }
-
-  @Builder
   sessionToolbar() {
     Row() {
       if (this.toolbarExpanded) {
         Row({ space: 2 }) {
           // PC/2in1 有物理键鼠，隐藏触摸相关的软件控制（键盘/触控板/复位）
           if (!this.isPc) {
-            this.toolButton($r('sys.symbol.keyboard'), '键盘', this.keyboardShown, () => {
-              if (this.keyboardShown) {
-                this.hideKeyboard();
-              } else {
-                this.showKeyboard();
-              }
-            })
-            this.toolButton($r('sys.symbol.hand_point_up_tap_fill'), this.trackpadMode ? '触控板' : '直接触摸',
-              this.trackpadMode, () => {
+            ToolButton({ symbol: $r('sys.symbol.keyboard'), label: '键盘', active: this.keyboardShown,
+              action: () => {
+                if (this.keyboardShown) {
+                  this.hideKeyboard();
+                } else {
+                  this.showKeyboard();
+                }
+              } })
+            ToolButton({ symbol: $r('sys.symbol.hand_point_up_tap_fill'),
+              label: this.trackpadMode ? '触控板' : '直接触摸', active: this.trackpadMode,
+              action: () => {
                 this.trackpadMode = !this.trackpadMode;
                 hmrdp.setTouchMode(this.trackpadMode);
                 this.resetZoom();
                 promptAction.showToast({ message: this.trackpadMode ? '触控板模式' : '直接触摸模式' });
-              })
-            this.toolButton($r('sys.symbol.arrow_counterclockwise'), '复位', false, () => {
-              this.resetZoom();
-            })
+              } })
+            ToolButton({ symbol: $r('sys.symbol.arrow_counterclockwise'), label: '复位', active: false,
+              action: () => { this.resetZoom(); } })
           }
           // 系统键：所有设备都显示——PC 上物理 Win/系统组合键被鸿蒙拦截，只能靠它代发
           Column({ space: 2 }) {
@@ -544,31 +554,20 @@ export struct SessionPage {
           .bindMenu(this.systemKeysMenu())
           // 全屏切换：仅手机/平板；PC 会话窗口由 SessionAbility 统一全屏管理
           if (!this.isPc) {
-            this.toolButton(
-              this.fullscreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
-                              : $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
-              this.fullscreen ? '退出全屏' : '全屏', this.fullscreen, () => {
-                this.toggleFullscreen();
-              })
+            ToolButton({
+              symbol: this.fullscreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
+                                      : $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
+              label: this.fullscreen ? '退出全屏' : '全屏', active: this.fullscreen,
+              action: () => { this.toggleFullscreen(); } })
           }
-          this.toolButton($r('sys.symbol.xmark'), '断开', false, () => {
-            this.leave('');
-          })
+          ToolButton({ symbol: $r('sys.symbol.xmark'), label: '断开', active: false,
+            action: () => { this.leave(''); } })
         }
       }
-      // 收起/展开：@Builder 值参不响应状态变化，故内联直接引用 toolbarExpanded
-      Column({ space: 2 }) {
-        SymbolGlyph(this.toolbarExpanded ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'))
-          .fontSize(22)
-          .fontColor([Color.White])
-        Text(this.toolbarExpanded ? '收起' : '展开')
-          .fontSize(10)
-          .fontColor(Color.White)
-      }
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-      .onClick(() => {
-        this.toolbarExpanded = !this.toolbarExpanded;
-      })
+      ToolButton({
+        symbol: this.toolbarExpanded ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'),
+        label: this.toolbarExpanded ? '收起' : '展开', active: false,
+        action: () => { this.toolbarExpanded = !this.toolbarExpanded; } })
     }
     .backgroundColor('#B3000000')
     .borderRadius(24)
