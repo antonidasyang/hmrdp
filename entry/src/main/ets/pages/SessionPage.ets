@@ -323,6 +323,12 @@ export struct SessionPage {
   private maybeSendImage(data: pasteboard.PasteData): void {
     try {
       const count = data.getRecordCount();
+      let mimes: string = '';
+      for (let i = 0; i < count; i++) {
+        const r = data.getRecord(i);
+        mimes += r.mimeType + ';';
+      }
+      console.info(`HMRDP clip records=${count} mimes=[${mimes}]`);
       for (let i = 0; i < count; i++) {
         const rec = data.getRecord(i);
         if (rec.mimeType === pasteboard.MIMETYPE_PIXELMAP) {
@@ -331,14 +337,16 @@ export struct SessionPage {
           packer.packToData(pm, { format: 'image/png', quality: 100 }).then((buf: ArrayBuffer) => {
             packer.release();
             const bytes = new Uint8Array(buf);
+            console.info(`HMRDP clip image packed=${bytes.length}`);
             if (bytes.length === this.clipLastImage) {
               return; // 同尺寸，视为重复
             }
             this.clipLastImage = bytes.length;
             this.clipLast = ''; // 新图片到来，清空文本去重避免误判
             hmrdp.setClipboardImage(bytes);
-          }).catch(() => {
+          }).catch((e: Object) => {
             packer.release();
+            console.info(`HMRDP clip image pack fail: ${JSON.stringify(e)}`);
           });
           return;
         }

@@ -179,6 +179,7 @@ UINT HmCliprdrServerFormatDataRequest(CliprdrClientContext* context,
 {
     RdpSession* session = reinterpret_cast<RdpSession*>(context->custom);
     std::vector<uint8_t> bytes;
+    HMLOGI("剪贴板: 远端请求数据 formatId=%{public}u", req->requestedFormatId);
     if (req->requestedFormatId == CF_UNICODETEXT) {
         std::string u8;
         if (session->CopyLocalClipboardUtf8(u8))
@@ -187,6 +188,7 @@ UINT HmCliprdrServerFormatDataRequest(CliprdrClientContext* context,
         // 远端请求我们广告的 PNG 图片
         session->CopyLocalClipboardImage(bytes);
     }
+    HMLOGI("剪贴板: 远端请求响应 %{public}zu 字节", bytes.size());
     CLIPRDR_FORMAT_DATA_RESPONSE resp = {};
     if (!bytes.empty()) {
         resp.common.msgFlags = CB_RESPONSE_OK;
@@ -209,8 +211,10 @@ UINT HmCliprdrServerFormatDataResponse(CliprdrClientContext* context,
     const UINT32 len = resp->common.dataLen;
     // PNG 图片响应（数据以 PNG 签名开头）；否则按文本（CF_UNICODETEXT UTF-16LE）
     if (len >= sizeof(kPngSig) && memcmp(data, kPngSig, sizeof(kPngSig)) == 0) {
+        HMLOGI("剪贴板: 远端图片响应 %{public}u 字节 PNG", len);
         session->DeliverRemoteClipboardImage(data, len);
     } else if (len >= sizeof(WCHAR)) {
+        HMLOGI("剪贴板: 远端文本响应 %{public}u 字节", len);
         const std::string u8 = CfUnicodeToUtf8(data, len);
         if (!u8.empty())
             session->DeliverRemoteClipboard(u8);
@@ -697,6 +701,7 @@ void RdpSession::SetLocalClipboardImage(const uint8_t* pngData, size_t len)
             haveLocalClipImage_ = false;
         }
     }
+    HMLOGI("剪贴板: 本地图片 %{public}zu 字节 have=%{public}d", len, (int)(pngData && len > 0));
     advertisePending_.store(true);
     if (inputSignal_)
         SetEvent(inputSignal_);
@@ -748,6 +753,7 @@ void RdpSession::SendClipboardFormatList()
     list.numFormats = n;
     list.formats = n > 0 ? fmts : nullptr;
     cliprdr_->ClientFormatList(cliprdr_, &list);
+    HMLOGI("剪贴板: 广告格式 text=%{public}d image=%{public}d", (int)haveText, (int)haveImage);
 }
 
 bool RdpSession::CopyLocalClipboardUtf8(std::string& out)
