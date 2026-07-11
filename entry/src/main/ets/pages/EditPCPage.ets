@@ -5,8 +5,9 @@ import { PCStore } from '../model/PCStore';
 import { AccountEntry, accountDisplay } from '../model/AccountEntry';
 import { AccountStore } from '../model/AccountStore';
 import { EditAccountParams } from './EditAccountPage';
-import { ShareDir, DEFAULT_SHARE_DIR, shareLabel } from '../model/ShareFolders';
-import { FolderBrowser } from '../components/FolderBrowser';
+import { ShareDir, DEFAULT_SHARE_DIR, shareLabel, ShareTarget, SHARE_TARGETS } from '../model/ShareFolders';
+import { Environment } from '@kit.CoreFileKit';
+import fs from '@ohos.file.fs';
 
 export class EditPCParams {
   /** 空串 = 新建 */
@@ -61,24 +62,103 @@ export struct EditPCPage {
   @State accountId: string = '';
   @StorageProp('accountsVersion') @Watch('reloadAccounts') accountsVersion: number = 0;
   private pathStack: NavPathStack | null = null;
-  private folderController: CustomDialogController | null = null;
+  // 目录浏览器内联状态（不走 @CustomDialog，避免回调传不回来）
+  @State fbVisible: boolean = false;
+  @State fbBase: string = 'download';
+  @State fbSub: string = '';
+  @State fbEntries: string[] = [];
+  @State fbLoading: boolean = false;
+  @State fbError: string = '';
 
   private ctx(): common.Context {
     return this.getUIContext().getHostContext()!;
   }
 
+  // 打开目录浏览器：从当前 shareDir 初始化
   private openFolderPicker(): void {
-    this.folderController = new CustomDialogController({
-      builder: FolderBrowser({
-        init: this.shareDir ?? { base: DEFAULT_SHARE_DIR.base, sub: DEFAULT_SHARE_DIR.sub },
-        onConfirm: (d: ShareDir | undefined) => {
-          this.shareDir = d;
+    this.fbBase = this.shareDir?.base ?? DEFAULT_SHARE_DIR.base;
+    this.fbSub = this.shareDir?.sub ?? DEFAULT_SHARE_DIR.sub;
+    this.fbVisible = true;
+    this.fbRefresh();
+  }
+
+  private fbBasePath(): string | undefined {
+    try {
+      if (this.fbBase === 'download') {
+        return Environment.getUserDownloadDir();
+      }
+      if (this.fbBase === 'documents') {
+        return Environment.getUserDocumentDir();
+      }
+      if (this.fbBase === 'desktop') {
+        return Environment.getUserDesktopDir();
+      }
+    } catch (e) {
+      return undefined;
+    }
+    return undefined;
+  }
+
+  private async fbRefresh(): Promise<void> {
+    this.fbError = '';
+    const b = this.fbBasePath();
+    if (!b) {
+      this.fbEntries = [];
+      this.fbError = '无访问权限（未授权该目录）';
+      return;
+    }
+    const p = this.fbSub.length > 0 ? `${b}/${this.fbSub}` : b;
+    this.fbLoading = true;
+    try {
+      const names: string[] = await fs.listFile(p);
+      const dirs: string[] = [];
+      for (const n of names) {
+        try {
+          const s = await fs.stat(`${p}/${n}`);
+          if (s.isDirectory()) {
+            dirs.push(n);
+          }
+        } catch (e) {
         }
-      }),
-      alignment: DialogAlignment.Center,
-      customStyle: true
-    });
-    this.folderController.open();
+      }
+      dirs.sort();
+      this.fbEntries = dirs;
+    } catch (e) {
+      this.fbEntries = [];
+      this.fbError = '无法读取目录';
+    } finally {
+      this.fbLoading = false;
+    }
+  }
+
+  private fbEnter(name: string): void {
+    this.fbSub = this.fbSub.length > 0 ? `${this.fbSub}/${name}` : name;
+    this.fbRefresh();
+  }
+
+  private fbUp(): void {
+    if (this.fbSub.length === 0) {
+      return;
+    }
+    const idx = this.fbSub.lastIndexOf('/');
+    this.fbSub = idx >= 0 ? this.fbSub.substring(0, idx) : '';
+    this.fbRefresh();
+  }
+
+  private fbSwitchBase(key: string): void {
+    this.fbBase = key;
+    this.fbSub = '';
+    this.fbRefresh();
+  }
+
+  private fbConfirm(): void {
+    this.shareDir = { base: this.fbBase, sub: this.fbSub };
+    this.fbVisible = false;
+  }
+
+  private fbClear(): void {
+    this.shareDir = undefined;
+    this.fbVisible = false;
   }
 
   reloadAccounts(): void {
@@ -250,8 +330,113 @@ export struct EditPCPage {
     .onClick(() => this.openFolderPicker())
   }
 
+  // 目录浏览器 overlay（内联，不走 @CustomDialog）
+  @Builder
+  folderPickerOverlay() {
+    Column() {
+      Column({ space: 10 }) {
+        Row({ space: 6 }) {
+          ForEach(SHARE_TARGETS, (t: ShareTarget) => {
+            Button(t.label)
+              .fontSize(13)
+              .height(32)
+              .backgroundColor(this.fbBase === t.key ? '#4DA3FF' : '#EEEEEE')
+              .fontColor(this.fbBase === t.key ? Color.White : '#333333')
+              .onClick(() => this.fbSwitchBase(t.key))
+          }, (t: ShareTarget) => t.key)
+        }
+        .width('100%')
+
+        Text(`当前位置：${SHARE_TARGETS.find((x) => x.key === this.fbBase)?.label ?? this.fbBase}${this.fbSub.length > 0 ? ' > ' + this.fbSub : ''}`)
+          .fontSize(13)
+          .fontColor('#666666')
+          .maxLines(2)
+          .width('100%')
+
+        Row({ space: 8 }) {
+          Button('上一级')
+            .fontSize(13)
+            .height(30)
+            .enabled(this.fbSub.length > 0)
+            .onClick(() => this.fbUp())
+          Blank()
+          Text(this.fbLoading ? '读取中…' : `${this.fbEntries.length} 个子文件夹`)
+            .fontSize(12)
+            .fontColor('#999999')
+        }
+        .width('100%')
+
+        if (this.fbError.length > 0) {
+          Text(this.fbError)
+            .fontSize(14)
+            .fontColor('#E05555')
+            .width('100%')
+            .textAlign(TextAlign.Center)
+            .padding(20)
+        } else if (this.fbLoading) {
+          LoadingProgress().width(36).height(36)
+        } else if (this.fbEntries.length === 0) {
+          Text('（无子文件夹）')
+            .fontSize(14)
+            .fontColor('#999999')
+            .width('100%')
+            .textAlign(TextAlign.Center)
+            .padding(20)
+        } else {
+          Scroll() {
+            Column({ space: 0 }) {
+              ForEach(this.fbEntries, (name: string) => {
+                Row() {
+                  SymbolGlyph($r('sys.symbol.folder'))
+                    .fontSize(18)
+                    .fontColor(['#F0A030'])
+                  Text(name)
+                    .fontSize(15)
+                    .margin({ left: 8 })
+                  Blank()
+                  Text('›')
+                    .fontSize(18)
+                    .fontColor('#CCCCCC')
+                }
+                .width('100%')
+                .height(44)
+                .padding({ left: 8, right: 12 })
+                .onClick(() => this.fbEnter(name))
+              }, (name: string) => name)
+            }
+          }
+          .layoutWeight(1)
+          .align(Alignment.Top)
+        }
+
+        Row({ space: 12 }) {
+          Button('不共享')
+            .layoutWeight(1)
+            .backgroundColor('#F2F2F2')
+            .fontColor('#333333')
+            .onClick(() => this.fbClear())
+          Button('选择当前目录')
+            .layoutWeight(1)
+            .onClick(() => this.fbConfirm())
+        }
+        .width('100%')
+        .margin({ top: 4 })
+      }
+      .width('88%')
+      .height('68%')
+      .padding(16)
+      .backgroundColor(Color.White)
+      .borderRadius(16)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor('#80000000')
+    .justifyContent(FlexAlign.Center)
+  }
+
   build() {
     NavDestination() {
+      Stack() {
       Scroll() {
         Column({ space: 12 }) {
           this.sectionTitle('电脑')
@@ -372,6 +557,10 @@ export struct EditPCPage {
       .width('100%')
       .height('100%')
       .align(Alignment.Top)
+      if (this.fbVisible) {
+        this.folderPickerOverlay()
+      }
+      }
     }
     .title(this.editingId.length > 0 ? '编辑电脑' : '添加电脑')
     .onReady((ctx: NavDestinationContext) => {
