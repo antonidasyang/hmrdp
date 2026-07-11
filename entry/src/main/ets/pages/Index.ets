@@ -328,6 +328,7 @@ struct Index {
     }
     .title('电脑')
     .titleMode(NavigationTitleMode.Mini)
+    .mode(NavigationMode.Stack)
     .hideBackButton(true)
     .menus([
       {
