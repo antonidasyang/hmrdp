@@ -480,8 +480,9 @@ export struct SessionPage {
     const dynamic = (this.params.width === 0 || this.params.height === 0);
     let initW = dynamic ? 0 : this.params.width;
     let initH = dynamic ? 0 : this.params.height;
-    if (this.params.fullscreen) {
-      // 全屏：初始就用整块屏幕分辨率，避免动态分辨率生效前偏低
+    if (dynamic && this.params.fullscreen) {
+      // 动态+全屏：初始用整屏分辨率，避免动态分辨率生效前偏低
+      // 固定分辨率不覆盖，尊重用户选择
       try {
         const d = display.getDefaultDisplaySync();
         initW = d.width;
