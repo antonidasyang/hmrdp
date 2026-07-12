@@ -502,6 +502,7 @@ export struct SessionPage {
       dynamic: dynamic ? 1 : 0,
       drives: this.resolveShareDrives() // 磁盘重定向：选定的本地文件夹挂成远端网络盘
     };
+    console.info(`HMRDP connect w=${initW} h=${initH} dynamic=${dynamic} fullscreen=${this.params.fullscreen} userW=${this.params.width} userH=${this.params.height}`);
     this.errorText = '';
     this.statusText = '正在连接…';
     hmrdp.setTouchMode(this.trackpadMode); // 同步全局触摸映射器状态
