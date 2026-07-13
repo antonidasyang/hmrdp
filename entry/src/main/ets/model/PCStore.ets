@@ -3,6 +3,7 @@ import { asset } from '@kit.AssetStoreKit';
 import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PCEntry } from './PCEntry';
 
 const PREF_NAME = 'hmrdp_pcs';
@@ -53,6 +54,18 @@ export class PCStore {
     PCStore.saveAll(context, list);
   }
 
+  /** 仅更新最近使用时间，保留磁盘上其它字段的最新值。
+   *  注意：不要用内存里的整对象 upsert 来 bump lastUsedAt——列表内存态可能
+   *  滞后于刚做的编辑，整对象回写会把已保存的分辨率/账号/共享目录覆盖回去。*/
+  static touch(context: common.Context, id: string): void {
+    const list = PCStore.load(context);
+    const idx = list.findIndex((it) => it.id === id);
+    if (idx >= 0) {
+      list[idx].lastUsedAt = Date.now();
+      PCStore.saveAll(context, list);
+    }
+  }
+
   static remove(context: common.Context, id: string): void {
     const list = PCStore.load(context).filter((it) => it.id !== id);
     PCStore.saveAll(context, list);
@@ -65,12 +78,13 @@ export class PCStore {
   // ---- 密码（Asset Store Kit）----
 
   static async savePassword(id: string, password: string): Promise<void> {
-    const alias = passwordAlias(id);
-    await PCStore.removePassword(id); // 幂等：先清旧值
     const attrs: asset.AssetMap = new Map();
-    attrs.set(asset.Tag.ALIAS, toBytes(alias));
+    attrs.set(asset.Tag.ALIAS, toBytes(passwordAlias(id)));
     attrs.set(asset.Tag.SECRET, toBytes(password));
     attrs.set(asset.Tag.ACCESSIBILITY, asset.Accessibility.DEVICE_FIRST_UNLOCKED);
+    // 已存在则原子覆盖。不能先 remove 再 add：add 失败会连旧密码一起丢，
+    // 而列表里 hasPassword 仍是 true，之后每次连接都弹密码框。
+    attrs.set(asset.Tag.CONFLICT_RESOLUTION, asset.ConflictResolution.OVERWRITE);
     await asset.add(attrs);
   }
 
@@ -86,6 +100,8 @@ export class PCStore {
       const secret = result[0].get(asset.Tag.SECRET) as Uint8Array;
       return fromBytes(secret);
     } catch (e) {
+      const err = e as BusinessError;
+      hilog.warn(0x0000, 'PCStore', '查询电脑密码失败: code=%{public}d', err.code);
       return null;
     }
   }

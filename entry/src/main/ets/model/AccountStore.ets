@@ -3,6 +3,7 @@ import { asset } from '@kit.AssetStoreKit';
 import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AccountEntry } from './AccountEntry';
 
 const PREF_NAME = 'hmrdp_accounts';
@@ -68,12 +69,13 @@ export class AccountStore {
   // ---- 密码（Asset Store Kit）----
 
   static async savePassword(id: string, password: string): Promise<void> {
-    const alias = passwordAlias(id);
-    await AccountStore.removePassword(id);
     const attrs: asset.AssetMap = new Map();
-    attrs.set(asset.Tag.ALIAS, toBytes(alias));
+    attrs.set(asset.Tag.ALIAS, toBytes(passwordAlias(id)));
     attrs.set(asset.Tag.SECRET, toBytes(password));
     attrs.set(asset.Tag.ACCESSIBILITY, asset.Accessibility.DEVICE_FIRST_UNLOCKED);
+    // 已存在则原子覆盖。不能先 remove 再 add：add 失败会连旧密码一起丢，
+    // 而列表里 hasPassword 仍是 true，之后每次连接都弹密码框。
+    attrs.set(asset.Tag.CONFLICT_RESOLUTION, asset.ConflictResolution.OVERWRITE);
     await asset.add(attrs);
   }
 
@@ -89,6 +91,8 @@ export class AccountStore {
       const secret = result[0].get(asset.Tag.SECRET) as Uint8Array;
       return fromBytes(secret);
     } catch (e) {
+      const err = e as BusinessError;
+      hilog.warn(0x0000, 'AccountStore', '查询账号密码失败: code=%{public}d', err.code);
       return null;
     }
   }

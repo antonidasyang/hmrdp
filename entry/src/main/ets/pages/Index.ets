@@ -1,5 +1,7 @@
 import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { abilityAccessCtrl, common, Permissions, Want, StartOptions, AbilityConstant } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { EditPCPage, EditPCParams } from './EditPCPage';
 import { SessionPage } from './SessionPage';
 import { AboutPage } from './AboutPage';
@@ -67,8 +69,9 @@ struct Index {
   }
 
   private startSession(pc: PCEntry, username: string, password: string): void {
-    pc.lastUsedAt = Date.now();
-    PCStore.upsert(this.ctx(), pc);
+    // 只记最近使用时间，不整对象回写：列表内存态可能滞后于刚做的编辑，
+    // 整对象 upsert 会把磁盘上已保存的分辨率/账号/共享目录覆盖回去。
+    PCStore.touch(this.ctx(), pc.id);
     const params = new SessionParams(pc.host, pc.port, username, password, '');
     params.width = pc.width;
     params.height = pc.height;
@@ -113,39 +116,57 @@ struct Index {
   }
 
   private connectTo(pc: PCEntry): void {
+    // 以磁盘最新值为准：ForEach 按id复用列表项时，点击闭包可能持有编辑前的旧对象，
+    // 直接用会连到旧分辨率/旧账号。这里按id重新取一份最新的。
+    const cur: PCEntry = PCStore.load(this.ctx()).find((it) => it.id === pc.id) ?? pc;
     // 关联账号优先解析
-    if (pc.accountId !== undefined && pc.accountId.length > 0) {
-      const acct = AccountStore.find(this.ctx(), pc.accountId);
+    if (cur.accountId !== undefined && cur.accountId.length > 0) {
+      const acct = AccountStore.find(this.ctx(), cur.accountId);
       if (acct) {
         if (acct.hasPassword) {
           AccountStore.getPassword(acct.id).then((password: string | null) => {
             if (password !== null) {
-              this.startSession(pc, acct.username, password);
+              this.startSession(cur, acct.username, password);
             } else {
-              this.askCredentials(pc, acct.username);
+              // 标志说已存但加密库查不到（记录丢失）→ 询问一次，确认后补存回账号自愈
+              this.askCredentials(cur, acct.username, (u: string, p: string) => {
+                if (u === acct.username && p.length > 0) {
+                  AccountStore.savePassword(acct.id, p).catch((e: BusinessError) => {
+                    hilog.warn(0x0000, 'Index', '补存账号密码失败: code=%{public}d', e.code);
+                  });
+                }
+              });
             }
           });
         } else {
-          this.askCredentials(pc, acct.username);
+          this.askCredentials(cur, acct.username);
         }
         return;
       }
       // 账号已被删除 → 退回本机凭据
     }
-    if (pc.hasPassword && pc.username.length > 0) {
-      PCStore.getPassword(pc.id).then((password: string | null) => {
+    if (cur.hasPassword && cur.username.length > 0) {
+      PCStore.getPassword(cur.id).then((password: string | null) => {
         if (password !== null) {
-          this.startSession(pc, pc.username, password);
+          this.startSession(cur, cur.username, password);
         } else {
-          this.askCredentials(pc, pc.username);
+          // 标志说已存但加密库查不到（记录丢失）→ 询问一次，确认后补存自愈
+          this.askCredentials(cur, cur.username, (u: string, p: string) => {
+            if (u === cur.username && p.length > 0) {
+              PCStore.savePassword(cur.id, p).catch((e: BusinessError) => {
+                hilog.warn(0x0000, 'Index', '补存电脑密码失败: code=%{public}d', e.code);
+              });
+            }
+          });
         }
       });
     } else {
-      this.askCredentials(pc, pc.username);
+      this.askCredentials(cur, cur.username);
     }
   }
 
-  private askCredentials(pc: PCEntry, username: string): void {
+  /** restore：仅在「已保存的密码丢失」场景传入，确认后把输入的密码补存回加密库 */
+  private askCredentials(pc: PCEntry, username: string, restore?: (u: string, p: string) => void): void {
     this.askTarget = pc;
     // 重建 controller 以刷新 builder 参数
     this.dialogController = new CustomDialogController({
@@ -153,6 +174,9 @@ struct Index {
         pcName: displayName(pc),
         username: username,
         onConfirm: (u: string, password: string) => {
+          if (restore !== undefined) {
+            restore(u, password);
+          }
           this.startSession(pc, u, password);
         }
       }),
@@ -302,9 +326,11 @@ struct Index {
           Scroll() {
             Column() {
               Column({ space: 12 }) {
+                // key 必须包含内容而不只是 id：ForEach 对 key 相同的项不重建，
+                // 编辑保存后卡片会一直显示旧值（磁盘其实已存上）。内容进 key 才会刷新。
                 ForEach(this.pcs, (pc: PCEntry) => {
                   this.pcCard(pc)
-                }, (pc: PCEntry) => pc.id)
+                }, (pc: PCEntry) => JSON.stringify(pc))
               }
               .width('100%')
               .constraintSize({ maxWidth: 840 })

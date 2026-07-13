@@ -1,5 +1,6 @@
 import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { PCEntry } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
 import { AccountEntry, accountDisplay } from '../model/AccountEntry';
@@ -204,6 +205,16 @@ export struct EditPCPage {
     this.hostname = pc.port === 3389 ? pc.host : `${pc.host}:${pc.port}`;
     this.username = pc.username;
     this.hasSavedPassword = pc.hasPassword;
+    if (pc.hasPassword) {
+      // 标志可能失真（加密库记录丢失但 hasPassword 还是 true）：真查一次，
+      // 否则界面显示「密码已保存」，用户留空保存等于什么都没存
+      PCStore.getPassword(pc.id).then((p: string | null) => {
+        if (p === null) {
+          this.hasSavedPassword = false;
+          promptAction.showToast({ message: '之前保存的密码已失效，请重新输入' });
+        }
+      });
+    }
     this.accountId = pc.accountId ?? '';
     this.shareDir = pc.shareDir ? { base: pc.shareDir.base, sub: pc.shareDir.sub } :
       { base: DEFAULT_SHARE_DIR.base, sub: DEFAULT_SHARE_DIR.sub };
@@ -249,8 +260,15 @@ export struct EditPCPage {
       username = account.username;
       hasPassword = false;
     } else if (this.password.length > 0) {
-      await PCStore.savePassword(id, this.password);
-      hasPassword = true;
+      try {
+        await PCStore.savePassword(id, this.password);
+        hasPassword = true;
+      } catch (e) {
+        // 失败必须出声并留在编辑页：静默失败会让用户以为已保存
+        const err = e as BusinessError;
+        promptAction.showToast({ message: `密码保存失败（错误码 ${err.code}），请重试` });
+        return;
+      }
     }
 
     const entry: PCEntry = {

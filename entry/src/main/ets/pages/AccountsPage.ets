@@ -84,9 +84,10 @@ export struct AccountsPage {
         } else {
           Scroll() {
             Column({ space: 10 }) {
+              // key 含内容而不只是 id：key 相同的项 ForEach 不重建，编辑后行内会显示旧值
               ForEach(this.accounts, (a: AccountEntry) => {
                 this.accountRow(a)
-              }, (a: AccountEntry) => a.id)
+              }, (a: AccountEntry) => JSON.stringify(a))
             }
             .padding({ left: 16, right: 16, top: 8, bottom: 8 })
           }

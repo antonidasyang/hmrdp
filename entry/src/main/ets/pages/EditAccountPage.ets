@@ -1,5 +1,6 @@
 import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { AccountEntry } from '../model/AccountEntry';
 import { AccountStore } from '../model/AccountStore';
 
@@ -36,6 +37,16 @@ export struct EditAccountPage {
     this.username = a.username;
     this.domain = a.domain;
     this.hasSavedPassword = a.hasPassword;
+    if (a.hasPassword) {
+      // 标志可能失真（加密库记录丢失但 hasPassword 还是 true）：真查一次，
+      // 否则界面显示「密码已保存」，用户留空保存等于什么都没存
+      AccountStore.getPassword(a.id).then((p: string | null) => {
+        if (p === null) {
+          this.hasSavedPassword = false;
+          promptAction.showToast({ message: '之前保存的密码已失效，请重新输入' });
+        }
+      });
+    }
   }
 
   private async save(): Promise<void> {
@@ -47,8 +58,15 @@ export struct EditAccountPage {
 
     let hasPassword = this.hasSavedPassword;
     if (this.password.length > 0) {
-      await AccountStore.savePassword(id, this.password);
-      hasPassword = true;
+      try {
+        await AccountStore.savePassword(id, this.password);
+        hasPassword = true;
+      } catch (e) {
+        // 失败必须出声并留在编辑页：静默失败会让用户以为已保存
+        const err = e as BusinessError;
+        promptAction.showToast({ message: `密码保存失败（错误码 ${err.code}），请重试` });
+        return;
+      }
     }
 
     const entry: AccountEntry = {
