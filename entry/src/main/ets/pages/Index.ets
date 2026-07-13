@@ -344,7 +344,7 @@ struct Index {
           .align(Alignment.Top)
         }
 
-        Text(`HMRDP · ${this.coreVersion}`)
+        Text(`RDP远程桌面 · ${this.coreVersion}`)
           .fontSize(11)
           .fontColor($r('sys.color.font_tertiary'))
           .margin({ bottom: 6 })

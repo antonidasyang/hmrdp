@@ -25,10 +25,10 @@ export struct AboutPage {
       Scroll() {
         Column({ space: 16 }) {
           Column({ space: 6 }) {
-            Text('HMRDP')
+            Text('RDP远程桌面')
               .fontSize(24)
               .fontWeight(FontWeight.Bold)
-            Text('OpenHarmony 远程桌面客户端')
+            Text('开源 RDP 客户端 · HMRDP')
               .fontSize(14)
               .fontColor($r('sys.color.font_secondary'))
             Text('版本 1.0.0 · 内核 ' + this.coreVersion)
