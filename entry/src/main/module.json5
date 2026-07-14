@@ -50,16 +50,6 @@
         }
       },
       {
-        "name": "ohos.permission.INPUT_MONITORING",
-        "reason": "$string:perm_swipe_reason",
-        "usedScene": {
-          "abilities": [
-            "SessionAbility"
-          ],
-          "when": "inuse"
-        }
-      },
-      {
         "name": "ohos.permission.INTERCEPT_INPUT_EVENT",
         "reason": "$string:perm_intercept_reason",
         "usedScene": {

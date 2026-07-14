@@ -45,10 +45,6 @@ export const setClipboardImage: (bytes: Uint8Array) => void;
 /** 开/关物理键盘全局拦截（把含 Win 的全键盘转发远端）。返回是否处于拦截态；
  *  需受限权限 INTERCEPT_INPUT_EVENT，未授权时恒 false（自动降级到系统键菜单/普通按键）。 */
 export const setKeyInterception: (enable: boolean) => boolean;
-/** 开/关触控板四指横滑监听（需受限权限 INPUT_MONITORING，未授权返回 false 自动降级）。
- *  callback: type 0=CANCEL 1=BEGIN 2=UPDATE 3=END，x/y 为手势坐标（px）。 */
-export const setTouchpadSwipeMonitor: (enable: boolean,
-  callback?: (type: number, x: number, y: number) => void) => boolean;
 /** 开/关触摸→鼠标映射（PC 上关掉避免和物理鼠标产生双击） */
 export const setTouchEnabled: (enable: boolean) => void;
 /** 鼠标滚轮（delta 正值向上，单位为标准滚轮档） */

@@ -19,10 +19,6 @@
     {
       "name": "perm_intercept_reason",
       "value": "用于把物理键盘的全部按键（含 Win 等系统组合键）转发给远程电脑"
-    },
-    {
-      "name": "perm_swipe_reason",
-      "value": "用于识别触控板四指滑动手势，快速收起远程会话窗口返回本地桌面"
     }
   ]
 }

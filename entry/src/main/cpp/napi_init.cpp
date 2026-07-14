@@ -834,113 +834,6 @@ napi_value SetKeyInterception(napi_env env, napi_callback_info info)
     return result;
 }
 
-// ---- 触控板四指横滑监听（模拟「滑回本地桌面」）----
-// 公开 SDK 未开放 inputMonitor 的 d.ts，这里用 napi_load_module_with_info 在运行时
-// 加载系统模块 @ohos.multimodalInput.inputMonitor 并订阅 'fourFingersSwipe'。
-// 需要受限权限 ohos.permission.INPUT_MONITORING（ACL，与 INTERCEPT_INPUT_EVENT 同级）；
-// 无权限时 on() 抛异常，这里吞掉并返回 false 优雅降级。监听不消费事件，不影响系统。
-static napi_ref g_fourSwipeUserCb = nullptr;   // ArkTS 回调 (type, x, y)
-static napi_ref g_fourSwipeListener = nullptr; // 传给 on/off 的桥函数（须同一引用）
-static bool g_fourSwipeOn = false;
-
-static napi_value FourSwipeBridge(napi_env env, napi_callback_info info)
-{
-    size_t argc = 1;
-    napi_value evt = nullptr;
-    napi_get_cb_info(env, info, &argc, &evt, nullptr, nullptr);
-    napi_value undefined = nullptr;
-    napi_get_undefined(env, &undefined);
-    if (argc < 1 || !g_fourSwipeUserCb)
-        return undefined;
-    napi_value type = nullptr;
-    napi_value x = nullptr;
-    napi_value y = nullptr;
-    napi_get_named_property(env, evt, "type", &type);
-    napi_get_named_property(env, evt, "x", &x);
-    napi_get_named_property(env, evt, "y", &y);
-    napi_value cb = nullptr;
-    napi_get_reference_value(env, g_fourSwipeUserCb, &cb);
-    if (cb) {
-        napi_value args[3] = { type, x, y };
-        napi_call_function(env, undefined, cb, 3, args, nullptr);
-    }
-    return undefined;
-}
-
-static bool CallInputMonitor(napi_env env, const char* method, napi_value listener)
-{
-    napi_value mod = nullptr;
-    if (napi_load_module_with_info(env, "@ohos.multimodalInput.inputMonitor", nullptr, &mod) != napi_ok || !mod) {
-        HMLOGW("inputMonitor 系统模块加载失败");
-        return false;
-    }
-    napi_value fn = nullptr;
-    napi_get_named_property(env, mod, method, &fn);
-    napi_valuetype t = napi_undefined;
-    napi_typeof(env, fn, &t);
-    if (t != napi_function) {
-        HMLOGW("inputMonitor.%{public}s 不存在", method);
-        return false;
-    }
-    napi_value evtName = nullptr;
-    napi_create_string_utf8(env, "fourFingersSwipe", NAPI_AUTO_LENGTH, &evtName);
-    napi_value args[2] = { evtName, listener };
-    napi_status st = napi_call_function(env, mod, fn, 2, args, nullptr);
-    bool pending = false;
-    napi_is_exception_pending(env, &pending);
-    if (pending) {
-        napi_value err = nullptr;
-        napi_get_and_clear_last_exception(env, &err);
-    }
-    if (st != napi_ok || pending) {
-        HMLOGW("inputMonitor.%{public}s 失败（多为缺 INPUT_MONITORING 权限，自动降级）", method);
-        return false;
-    }
-    return true;
-}
-
-// setTouchpadSwipeMonitor(enable, callback?) — 返回是否处于监听态
-napi_value SetTouchpadSwipeMonitor(napi_env env, napi_callback_info info)
-{
-    size_t argc = 2;
-    napi_value args[2] = {};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    bool enable = false;
-    if (argc >= 1)
-        napi_get_value_bool(env, args[0], &enable);
-
-    if (enable && !g_fourSwipeOn) {
-        if (argc >= 2) {
-            if (g_fourSwipeUserCb) {
-                napi_delete_reference(env, g_fourSwipeUserCb);
-                g_fourSwipeUserCb = nullptr;
-            }
-            napi_create_reference(env, args[1], 1, &g_fourSwipeUserCb);
-        }
-        if (g_fourSwipeUserCb) {
-            napi_value listener = nullptr;
-            if (!g_fourSwipeListener) {
-                napi_create_function(env, "fourSwipeBridge", NAPI_AUTO_LENGTH, FourSwipeBridge, nullptr, &listener);
-                napi_create_reference(env, listener, 1, &g_fourSwipeListener);
-            } else {
-                napi_get_reference_value(env, g_fourSwipeListener, &listener);
-            }
-            g_fourSwipeOn = CallInputMonitor(env, "on", listener);
-            HMLOGI("触控板四指监听: %{public}d", g_fourSwipeOn ? 1 : 0);
-        }
-    } else if (!enable && g_fourSwipeOn) {
-        napi_value listener = nullptr;
-        napi_get_reference_value(env, g_fourSwipeListener, &listener);
-        if (listener)
-            CallInputMonitor(env, "off", listener);
-        g_fourSwipeOn = false;
-    }
-
-    napi_value result = nullptr;
-    napi_get_boolean(env, g_fourSwipeOn, &result);
-    return result;
-}
-
 void RegisterXComponent(napi_env env, napi_value exports)
 {
     napi_value exportInstance = nullptr;
@@ -970,7 +863,6 @@ napi_value Init(napi_env env, napi_value exports)
         { "setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setClipboardImage", nullptr, SetClipboardImage, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setKeyInterception", nullptr, SetKeyInterception, nullptr, nullptr, nullptr, napi_default, nullptr },
-        { "setTouchpadSwipeMonitor", nullptr, SetTouchpadSwipeMonitor, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setTouchEnabled", nullptr, SetTouchEnabled, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sendWheel", nullptr, SendWheel, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
