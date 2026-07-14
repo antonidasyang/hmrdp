@@ -121,9 +121,10 @@ export struct SessionPage {
   @State viewScale: number = 1;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
-  // 四指横滑收起会话（模拟「滑回本地桌面」：鸿蒙无第二桌面，滑出动画+minimize 是 OSEasy 同款做法）
+  // 触控板四指横滑收起会话（模拟「滑回本地桌面」：鸿蒙无第二桌面，滑出动画+minimize 是 OSEasy 同款做法）
   @State swipeX: number = 0;
   private fourSwipe: boolean = false;
+  private swipeBaseX: number = 0;
   private baseScale: number = 1;
   private baseOffsetX: number = 0;
   private baseOffsetY: number = 0;
@@ -227,10 +228,12 @@ export struct SessionPage {
     } catch (e) {
     }
     hmrdp.setKeyInterception(true);
+    this.setFourSwipeMonitor(true);
   }
 
   private teardownKeyInterception(): void {
     hmrdp.setKeyInterception(false);
+    this.setFourSwipeMonitor(false);
     if (this.keyWin) {
       try {
         this.keyWin.off('windowEvent', this.winEventCb);
@@ -241,11 +244,44 @@ export struct SessionPage {
   }
 
   private onWindowEvent(type: window.WindowEventType): void {
-    // 失焦/隐藏即释放键盘（用鼠标点其它窗口即可脱离）；重新聚焦且仍连接则恢复拦截
+    // 失焦/隐藏即释放键盘与手势监听（用鼠标点其它窗口即可脱离）；重新聚焦且仍连接则恢复
     if (type === window.WindowEventType.WINDOW_INACTIVE || type === window.WindowEventType.WINDOW_HIDDEN) {
       hmrdp.setKeyInterception(false);
+      this.setFourSwipeMonitor(false);
     } else if (type === window.WindowEventType.WINDOW_ACTIVE && this.connected) {
       hmrdp.setKeyInterception(true);
+      this.setFourSwipeMonitor(true);
+    }
+  }
+
+  // ---- 触控板四指横滑：收起会话窗口回本地桌面（OSEasy 同款模拟）----
+
+  /** 仅 PC 独立会话窗口启用；需 INPUT_MONITORING 受限权限，未授权自动降级为不启用 */
+  private setFourSwipeMonitor(enable: boolean): void {
+    if (!this.isPc || !this.params.standalone) {
+      return;
+    }
+    if (enable) {
+      hmrdp.setTouchpadSwipeMonitor(true, (type: number, x: number, y: number) => {
+        this.onFourSwipe(type, x, y);
+      });
+    } else {
+      hmrdp.setTouchpadSwipeMonitor(false);
+    }
+  }
+
+  private onFourSwipe(type: number, x: number, _y: number): void {
+    // 诊断日志：真机首轮联调用（坐标量纲未在文档明确，据此调阈值/倍率）
+    console.info(`HMRDP fourSwipe type=${type} x=${x}`);
+    if (type === 1) { // BEGIN
+      this.swipeBaseX = x;
+      this.fourSwipe = true;
+    } else if (type === 2) { // UPDATE
+      if (this.fourSwipe) {
+        this.swipeX = this.getUIContext().px2vp(x - this.swipeBaseX);
+      }
+    } else { // END / CANCEL
+      this.finishFourSwipe();
     }
   }
 
@@ -555,7 +591,9 @@ export struct SessionPage {
     this.fourSwipe = false;
     hmrdp.setGestureActive(false);
     const w = this.viewW > 0 ? this.viewW : 1280;
-    if (Math.abs(this.swipeX) > w / 5) {
+    // 触控板滑动行程有限，阈值取窗宽 1/5 与 160vp 的较小者
+    const threshold = Math.min(w / 5, 160);
+    if (Math.abs(this.swipeX) > threshold) {
       const dir = this.swipeX > 0 ? 1 : -1;
       this.getUIContext().animateTo({
         duration: 220,
@@ -786,29 +824,6 @@ export struct SessionPage {
       .height('100%')
       .backgroundColor(Color.Black)
       .translate({ x: this.swipeX })
-      .priorityGesture(
-        // 四指横滑（触屏）：跟手位移，松手超阈值滑出并最小化，模拟「切回本地桌面」。
-        // priorityGesture 保证四指时优先于 XComponent 上的双指捏合/平移。
-        PanGesture({ fingers: 4, direction: PanDirection.Horizontal })
-          .onActionStart(() => {
-            if (!this.isPc || !this.params.standalone) {
-              return; // 仅 PC 独立会话窗口启用
-            }
-            this.fourSwipe = true;
-            hmrdp.setGestureActive(true); // 手势期间不把触点转发给远端
-          })
-          .onActionUpdate((event: GestureEvent) => {
-            if (this.fourSwipe) {
-              this.swipeX = event.offsetX as number;
-            }
-          })
-          .onActionEnd(() => {
-            this.finishFourSwipe();
-          })
-          .onActionCancel(() => {
-            this.finishFourSwipe();
-          })
-      )
     }
     .backgroundColor(Color.Black)
     .hideTitleBar(true)
