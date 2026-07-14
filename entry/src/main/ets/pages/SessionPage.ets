@@ -121,9 +121,6 @@ export struct SessionPage {
   @State viewScale: number = 1;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
-  // 四指横滑收起会话（模拟「滑回本地桌面」：鸿蒙无第二桌面，滑出动画+minimize 是 OSEasy 同款做法）
-  @State swipeX: number = 0;
-  private fourSwipe: boolean = false;
   private baseScale: number = 1;
   private baseOffsetX: number = 0;
   private baseOffsetY: number = 0;
@@ -547,45 +544,6 @@ export struct SessionPage {
     }
   }
 
-  /** 四指横滑结束：超过阈值 → 滑出动画 + 最小化到桌面；否则回弹 */
-  private finishFourSwipe(): void {
-    if (!this.fourSwipe) {
-      return;
-    }
-    this.fourSwipe = false;
-    hmrdp.setGestureActive(false);
-    const w = this.viewW > 0 ? this.viewW : 1280;
-    if (Math.abs(this.swipeX) > w / 5) {
-      const dir = this.swipeX > 0 ? 1 : -1;
-      this.getUIContext().animateTo({
-        duration: 220,
-        curve: Curve.EaseOut,
-        onFinish: () => {
-          this.minimizeToDesktop();
-        }
-      }, () => {
-        this.swipeX = dir * w;
-      });
-    } else {
-      this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseOut }, () => {
-        this.swipeX = 0;
-      });
-    }
-  }
-
-  /** 最小化会话窗口露出本地桌面。鸿蒙 PC 无第二桌面（WMS 只有唯一的
-   *  WINDOW_TYPE_DESKTOP），「滑回桌面」只能用内容动画 + minimize 模拟。 */
-  private minimizeToDesktop(): void {
-    window.getLastWindow(this.ctx())
-      .then((win: window.Window) => win.minimize())
-      .then(() => {
-        this.swipeX = 0; // 复位，恢复窗口时画面归位
-      })
-      .catch(() => {
-        this.swipeX = 0;
-      });
-  }
-
   private leave(message: string): void {
     if (this.closing) {
       return;
@@ -698,9 +656,6 @@ export struct SessionPage {
                   this.baseOffsetY = this.offsetY;
                 })
                 .onActionUpdate((event: GestureEvent) => {
-                  if (this.fourSwipe) {
-                    return; // 四指滑动进行中，忽略捏合（fingers 是"最少手指数"，四指也会触发它）
-                  }
                   this.viewScale = Math.min(4, Math.max(1, this.baseScale * event.scale));
                   this.clampOffsets();
                 })
@@ -718,7 +673,7 @@ export struct SessionPage {
                   this.baseOffsetY = this.offsetY;
                 })
                 .onActionUpdate((event: GestureEvent) => {
-                  if (this.viewScale > 1 && !this.fourSwipe) {
+                  if (this.viewScale > 1) {
                     this.offsetX = this.baseOffsetX + (event.offsetX as number);
                     this.offsetY = this.baseOffsetY + (event.offsetY as number);
                     this.clampOffsets();
@@ -785,32 +740,7 @@ export struct SessionPage {
       .width('100%')
       .height('100%')
       .backgroundColor(Color.Black)
-      .translate({ x: this.swipeX })
-      .priorityGesture(
-        // 四指横滑（触屏）：跟手位移，松手超阈值滑出并最小化，模拟「切回本地桌面」。
-        // priorityGesture 保证四指时优先于 XComponent 上的双指捏合/平移。
-        PanGesture({ fingers: 4, direction: PanDirection.Horizontal })
-          .onActionStart(() => {
-            if (!this.isPc || !this.params.standalone) {
-              return; // 仅 PC 独立会话窗口启用
-            }
-            this.fourSwipe = true;
-            hmrdp.setGestureActive(true); // 手势期间不把触点转发给远端
-          })
-          .onActionUpdate((event: GestureEvent) => {
-            if (this.fourSwipe) {
-              this.swipeX = event.offsetX as number;
-            }
-          })
-          .onActionEnd(() => {
-            this.finishFourSwipe();
-          })
-          .onActionCancel(() => {
-            this.finishFourSwipe();
-          })
-      )
     }
-    .backgroundColor(Color.Black)
     .hideTitleBar(true)
     .onReady((ctx: NavDestinationContext) => {
       this.pathStack = ctx.pathStack;
