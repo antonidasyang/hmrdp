@@ -1,4 +1,5 @@
 import { Environment } from '@kit.CoreFileKit';
+import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
 
 // 可共享给远程电脑的本地目录（须与已申请的目录权限对应）
 export interface ShareTarget {
@@ -7,12 +8,26 @@ export interface ShareTarget {
   label: string;
 }
 
-// 桌面目录权限 system_basic 需 ACL；未授权时 resolveSharePath 自动跳过该 base
+// 只保留三方应用可获授权的目录：桌面目录权限是 system_basic，三方拿不到，不再提供
 export const SHARE_TARGETS: ShareTarget[] = [
   { key: 'download', label: '下载' },
-  { key: 'documents', label: '文档' },
-  { key: 'desktop', label: '桌面' }
+  { key: 'documents', label: '文档' }
 ];
+
+const FILE_PERMS: Permissions[] = [
+  'ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY',
+  'ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY'
+];
+
+/** 按使用场景申请「下载/文档」目录读写权限：仅在用户选择共享文件夹、或发起带共享目录的
+ *  会话时调用，绝不在应用启动时申请（华为审核要求权限与场景绑定）。拒绝则回退应用沙箱。 */
+export async function ensureFilePermissions(ctx: common.UIAbilityContext): Promise<void> {
+  try {
+    await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(ctx, FILE_PERMS);
+  } catch (e) {
+    // 忽略：用户拒绝则磁盘重定向回退到应用沙箱目录
+  }
+}
 
 /** per-PC 共享文件夹：base=SHARE_TARGETS 之一，sub=相对子路径（''=该目录根） */
 export interface ShareDir {
@@ -44,8 +59,6 @@ export function resolveSharePath(d: ShareDir | undefined): string | undefined {
       base = Environment.getUserDownloadDir();
     } else if (d.base === 'documents') {
       base = Environment.getUserDocumentDir();
-    } else if (d.base === 'desktop') {
-      base = Environment.getUserDesktopDir();
     } else {
       return undefined;
     }

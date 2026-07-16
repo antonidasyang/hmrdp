@@ -6,7 +6,7 @@ import { PCStore } from '../model/PCStore';
 import { AccountEntry, accountDisplay } from '../model/AccountEntry';
 import { AccountStore } from '../model/AccountStore';
 import { EditAccountParams } from './EditAccountPage';
-import { ShareDir, DEFAULT_SHARE_DIR, shareLabel, ShareTarget, SHARE_TARGETS } from '../model/ShareFolders';
+import { ShareDir, DEFAULT_SHARE_DIR, shareLabel, ShareTarget, SHARE_TARGETS, ensureFilePermissions } from '../model/ShareFolders';
 import { Environment } from '@kit.CoreFileKit';
 import fs from '@ohos.file.fs';
 
@@ -75,12 +75,17 @@ export struct EditPCPage {
     return this.getUIContext().getHostContext()!;
   }
 
-  // 打开目录浏览器：从当前 shareDir 初始化
+  // 打开目录浏览器：从当前 shareDir 初始化。用户此刻正是要选择共享给远程电脑的本地目录，
+  // 这个场景内才申请目录权限（不在应用启动时申请）。
   private openFolderPicker(): void {
     this.fbBase = this.shareDir?.base ?? DEFAULT_SHARE_DIR.base;
     this.fbSub = this.shareDir?.sub ?? DEFAULT_SHARE_DIR.sub;
     this.fbVisible = true;
-    this.fbRefresh();
+    ensureFilePermissions(this.ctx() as common.UIAbilityContext).then(() => {
+      this.fbRefresh();
+    }).catch(() => {
+      this.fbRefresh();
+    });
   }
 
   private fbBasePath(): string | undefined {
@@ -90,9 +95,6 @@ export struct EditPCPage {
       }
       if (this.fbBase === 'documents') {
         return Environment.getUserDocumentDir();
-      }
-      if (this.fbBase === 'desktop') {
-        return Environment.getUserDesktopDir();
       }
     } catch (e) {
       return undefined;

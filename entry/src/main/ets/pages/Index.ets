@@ -1,5 +1,5 @@
 import { SymbolGlyphModifier } from '@kit.ArkUI';
-import { abilityAccessCtrl, common, Permissions, Want, StartOptions, AbilityConstant } from '@kit.AbilityKit';
+import { common, Want, StartOptions, AbilityConstant } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { EditPCPage, EditPCParams } from './EditPCPage';
@@ -11,7 +11,7 @@ import { SessionParams } from '../model/SessionParams';
 import { PCEntry, displayName } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
 import { AccountStore } from '../model/AccountStore';
-import { DEFAULT_SHARE_DIR, shareLabel } from '../model/ShareFolders';
+import { DEFAULT_SHARE_DIR, shareLabel, ensureFilePermissions } from '../model/ShareFolders';
 import { isPcDevice } from '../model/DeviceKit';
 import { PasswordDialog } from '../components/PasswordDialog';
 import hmrdp from 'libhmrdp.so';
@@ -44,24 +44,7 @@ struct Index {
   aboutToAppear(): void {
     this.coreVersion = hmrdp.getVersion();
     this.reload();
-    this.requestFilePermissions();
-  }
-
-  /** 申请「下载/文档/桌面」目录读写权限，用于会话内把本地目录共享给远程电脑做文件互传 */
-  private requestFilePermissions(): void {
-    const perms: Permissions[] = [
-      'ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY',
-      'ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY',
-      'ohos.permission.READ_WRITE_DESKTOP_DIRECTORY'
-    ];
-    try {
-      abilityAccessCtrl.createAtManager()
-        .requestPermissionsFromUser(this.ctx() as common.UIAbilityContext, perms)
-        .catch(() => {
-        });
-    } catch (e) {
-      // 忽略：拒绝则磁盘重定向回退到应用沙箱目录
-    }
+    // 不在启动时申请文件权限：改为在用户选择共享文件夹/发起带共享会话的场景内申请
   }
 
   reload(): void {
@@ -78,10 +61,18 @@ struct Index {
     params.scale = pc.scale;
     params.fullscreen = pc.fullscreen === true;
     params.shareDir = pc.shareDir ?? DEFAULT_SHARE_DIR;
-    if (isPcDevice()) {
-      this.launchSessionWindow(params); // PC：开独立全屏会话窗口
+    const launch = () => {
+      if (isPcDevice()) {
+        this.launchSessionWindow(params); // PC：开独立全屏会话窗口
+      } else {
+        this.pathStack.pushPathByName('session', params); // 手机/平板：应用内会话
+      }
+    };
+    // 本次会话将把本地共享目录挂给远程电脑 → 在此场景内申请目录权限（未授权则会话内回退沙箱）
+    if (pc.shareDir !== undefined) {
+      ensureFilePermissions(this.ctx() as common.UIAbilityContext).then(launch).catch(launch);
     } else {
-      this.pathStack.pushPathByName('session', params); // 手机/平板：应用内会话
+      launch();
     }
   }
 
