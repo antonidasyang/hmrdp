@@ -51,12 +51,26 @@ export default class SessionAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     // 该 Ability 在 module.json5 声明 supportWindowMode=["fullscreen"]：
     // 2in1 上系统会将其作为全屏应用、自动开进独立桌面（对齐 OSEasy 的 VirtualAbility）。
-    // 因此这里不再 maximize（那会降级为带任务栏的最大化态，反而破坏独立桌面）。
     windowStage.loadContent('pages/SessionHost', this.storage, (err) => {
       if (err.code) {
         return;
       }
+      this.enterImmersive(windowStage);
     });
+  }
+
+  /** 进入沉浸式全屏并禁止鼠标悬停底部/顶部唤出系统 Dock 与标题栏。
+   *  ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER 是 API 20 的 maximize 入参，
+   *  旧设备/形态调用失败则走 catch，退回系统默认全屏（Dock 仍可悬停）。 */
+  private enterImmersive(windowStage: window.WindowStage): void {
+    try {
+      const win = windowStage.getMainWindowSync();
+      win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
+        .catch(() => {
+        });
+    } catch (e) {
+      // 忽略：不支持该入参的设备退回默认全屏
+    }
   }
 
   onDestroy(): void {
