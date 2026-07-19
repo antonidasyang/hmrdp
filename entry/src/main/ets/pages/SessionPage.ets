@@ -687,10 +687,12 @@ export struct SessionPage {
           .onAxisEvent((event: AxisEvent) => {
             // 竖向滚动轴值，带方向（鼠标滚轮与触摸板双指滚动均覆盖）。scrollStep 仅鼠标滚轮
             // 携带、触摸板上恒正，会导致单向滚动，故改用 getVerticalAxisValue()。
-            // 120 = 一档（Windows WHEEL_DELTA）。远端方向若与手指相反，把 -v 改成 v。
+            // 60 = 半档（WHEEL_DELTA=120 的一半），触摸板滚动偏快，降速一半。方向若相反把 -v 改成 v。
             const v = event.getVerticalAxisValue();
             if (v !== 0) {
-              hmrdp.sendWheel(Math.trunc(-v * 120), event.x, event.y);
+              const delta = Math.trunc(-v * 60);
+              // 保底 ±1：轻微滑动经截断后不至于变 0 而丢滚动
+              hmrdp.sendWheel(delta !== 0 ? delta : (v > 0 ? -1 : 1), event.x, event.y);
             }
           })
 
