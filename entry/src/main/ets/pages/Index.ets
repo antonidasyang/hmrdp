@@ -1,5 +1,5 @@
 import { SymbolGlyphModifier } from '@kit.ArkUI';
-import { common, Want, StartOptions, AbilityConstant } from '@kit.AbilityKit';
+import { common, Want, StartOptions, AbilityConstant, contextConstant } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { EditPCPage, EditPCParams } from './EditPCPage';
@@ -96,9 +96,13 @@ struct Index {
         shareDir: params.shareDir ? JSON.stringify(params.shareDir) : ''
       }
     };
-    // 以全屏窗口模式启动，尽量让会话窗口成为独立全屏形态（2in1）
+    // 全屏窗口 + 独立新进程：每个会话开进自己的进程，native 全局会话（g_session/键盘拦截等）
+    // 互不干扰，从而支持同时连多台电脑。NEW_PROCESS_ATTACH_TO_PARENT 生命周期随主进程。
+    // processMode 与 startupVisibility 必须同时设置。
     const options: StartOptions = {
-      windowMode: AbilityConstant.WindowMode.WINDOW_MODE_FULLSCREEN
+      windowMode: AbilityConstant.WindowMode.WINDOW_MODE_FULLSCREEN,
+      processMode: contextConstant.ProcessMode.NEW_PROCESS_ATTACH_TO_PARENT,
+      startupVisibility: contextConstant.StartupVisibility.STARTUP_SHOW
     };
     ctx.startAbility(want, options).catch((e: Object) => {
       // 启动独立窗口失败则回退到应用内会话

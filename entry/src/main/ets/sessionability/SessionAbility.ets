@@ -13,7 +13,7 @@ export default class SessionAbility extends UIAbility {
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    // singleton 复用：更新参数（sessionEpoch 变化触发页面重连）
+    // multiton 下一般不会复用实例；保留以防同实例被再次拉起时刷新参数（sessionEpoch 触发重连）
     this.applyWant(want);
   }
 
