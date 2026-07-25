@@ -724,9 +724,10 @@ export struct SessionPage {
       if (this.toolbarExpanded) {
         Row({ space: 2 }) {
           // 放在最左、与「断开」隔开：全屏会话没有标题栏出口，这是回鸿蒙桌面的唯一按钮，
-          // 挨着「断开」容易点错
+          // 挨着「断开」容易点错。图标用系统符号 circle：SDK 没有鸿蒙 logo 符号，
+          // 自绘华为商标又有上架审核风险，圆环是最接近且安全的表达
           if (this.isPc) {
-            ToolButton({ symbol: $r('sys.symbol.house'), label: '回桌面', active: false,
+            ToolButton({ symbol: $r('sys.symbol.circle'), label: '回鸿蒙', active: false,
               action: () => { this.minimizeWindow(); } })
           }
           // PC/2in1 有物理键鼠，隐藏触摸相关的软件控制（键盘/触控板/复位）

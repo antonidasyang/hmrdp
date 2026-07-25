@@ -245,7 +245,7 @@ export struct SettingsPage {
           .borderRadius(12)
           .backgroundColor($r('sys.color.comp_background_list_card'))
 
-          Text('会话工具条右下角的「回桌面」按钮和这个热键等效，鼠标可用时可以直接点它。')
+          Text('会话工具条右下角的「回鸿蒙」按钮和这个热键等效，鼠标可用时可以直接点它。')
             .fontSize(12)
             .fontColor($r('sys.color.font_tertiary'))
             .alignSelf(ItemAlign.Start)
