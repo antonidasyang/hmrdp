@@ -7,6 +7,7 @@ import { SessionPage } from './SessionPage';
 import { AboutPage } from './AboutPage';
 import { AccountsPage } from './AccountsPage';
 import { EditAccountPage } from './EditAccountPage';
+import { SettingsPage } from './SettingsPage';
 import { SessionParams } from '../model/SessionParams';
 import { PCEntry, displayName } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
@@ -212,6 +213,8 @@ struct Index {
       AccountsPage()
     } else if (name === 'editAccount') {
       EditAccountPage()
+    } else if (name === 'settings') {
+      SettingsPage()
     }
   }
 
@@ -378,6 +381,13 @@ struct Index {
         symbolIcon: new SymbolGlyphModifier($r('sys.symbol.person_2')),
         action: () => {
           this.pathStack.pushPathByName('accounts', null);
+        }
+      },
+      {
+        value: 'settings',
+        symbolIcon: new SymbolGlyphModifier($r('sys.symbol.gearshape')),
+        action: () => {
+          this.pathStack.pushPathByName('settings', null);
         }
       },
       {

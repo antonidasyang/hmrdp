@@ -37,6 +37,26 @@ napi_threadsafe_function g_clipImageTsfn = nullptr;
 std::atomic<bool> g_keyIntercepting{ false };  // 物理键盘拦截是否生效（受限权限）
 std::atomic<bool> g_touchEnabled{ true };     // 触摸→鼠标映射开关（PC 上关掉以避双击）
 
+// ---- 会话逃逸热键（本地消费，不转发远端；命中即回调 ArkTS 最小化窗口）----
+// PC 全屏会话既没有标题栏悬浮也没有 Dock 悬浮，且键盘拦截器会吞掉鸿蒙自身的系统快捷键，
+// 所以必须自己留一个键盘出口。
+constexpr uint32_t kModCtrl = 0x1;
+constexpr uint32_t kModAlt = 0x2;
+constexpr uint32_t kModShift = 0x4;
+// g_heldMods 按物理键分位记录，左右键分开：只按下两个 Ctrl 中的一个时抬起不会误清状态
+constexpr uint32_t kHeldCtrlL = 1u << 0;
+constexpr uint32_t kHeldCtrlR = 1u << 1;
+constexpr uint32_t kHeldAltL = 1u << 2;
+constexpr uint32_t kHeldAltR = 1u << 3;
+constexpr uint32_t kHeldShiftL = 1u << 4;
+constexpr uint32_t kHeldShiftR = 1u << 5;
+
+napi_threadsafe_function g_escapeTsfn = nullptr;
+std::atomic<uint32_t> g_escapeMods{ 0 };      // 需要的修饰键位掩码；0 = 未配置
+std::atomic<int32_t> g_escapeKey{ 0 };        // 触发键的 OHOS 键码；0 = 未配置
+std::atomic<uint32_t> g_heldMods{ 0 };        // 当前按住的修饰键（物理键位）
+std::atomic<int32_t> g_escapeSwallowUp{ 0 };  // 已吞掉 DOWN 的触发键，其 UP 也要吞
+
 struct StateEvent {
     int32_t state;
     std::string message;
@@ -67,12 +87,22 @@ void CallJsStateCallback(napi_env env, napi_value jsCallback, void* /*context*/,
     napi_call_function(env, undefined, jsCallback, 2, args, nullptr);
 }
 
+void CallJsEscapeCallback(napi_env env, napi_value jsCallback, void* /*context*/, void* /*data*/)
+{
+    if (!env || !jsCallback)
+        return;
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    napi_call_function(env, undefined, jsCallback, 0, nullptr, nullptr);
+}
+
 void OnSessionState(SessionState state, const char* message, void* /*userData*/)
 {
     napi_threadsafe_function tsfn = nullptr;
     napi_threadsafe_function certTsfn = nullptr;
     napi_threadsafe_function clipTsfn = nullptr;
     napi_threadsafe_function clipImageTsfn = nullptr;
+    napi_threadsafe_function escapeTsfn = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         tsfn = g_stateTsfn;
@@ -84,8 +114,12 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
             g_clipTsfn = nullptr;
             clipImageTsfn = g_clipImageTsfn;
             g_clipImageTsfn = nullptr;
+            escapeTsfn = g_escapeTsfn; // 会话结束即摘热键回调；重连时 ArkTS 会重新下发
+            g_escapeTsfn = nullptr;
         }
     }
+    if (escapeTsfn)
+        napi_release_threadsafe_function(escapeTsfn, napi_tsfn_release);
     if (certTsfn)
         napi_release_threadsafe_function(certTsfn, napi_tsfn_release);
     if (clipTsfn)
@@ -278,6 +312,99 @@ RdpSession* CurrentSession()
     return g_session.get();
 }
 
+// 该物理修饰键在 g_heldMods 里占的位；0 = 不是修饰键
+uint32_t PhysicalModBit(int32_t code)
+{
+    switch (code) {
+        case KEY_CTRL_LEFT:   return kHeldCtrlL;
+        case KEY_CTRL_RIGHT:  return kHeldCtrlR;
+        case KEY_ALT_LEFT:    return kHeldAltL;
+        case KEY_ALT_RIGHT:   return kHeldAltR;
+        case KEY_SHIFT_LEFT:  return kHeldShiftL;
+        case KEY_SHIFT_RIGHT: return kHeldShiftR;
+        default:              return 0;
+    }
+}
+
+// 物理键位 -> Ctrl/Alt/Shift 三位掩码（与 ArkTS 侧 MOD_* 约定一致）
+uint32_t FoldMods(uint32_t held)
+{
+    uint32_t mods = 0;
+    if ((held & (kHeldCtrlL | kHeldCtrlR)) != 0)
+        mods |= kModCtrl;
+    if ((held & (kHeldAltL | kHeldAltR)) != 0)
+        mods |= kModAlt;
+    if ((held & (kHeldShiftL | kHeldShiftR)) != 0)
+        mods |= kModShift;
+    return mods;
+}
+
+// 远端此刻已经收到过修饰键的按下（修饰键照常转发），命中热键后必须补发抬起，
+// 否则我们吞掉后续按键、远端会一直以为 Ctrl/Shift 还按着。
+void ReleaseRemoteModifiers(uint32_t held)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_session)
+        return;
+    if ((held & kHeldCtrlL) != 0)
+        g_session->SendScancode(0x1D, false, false);
+    if ((held & kHeldCtrlR) != 0)
+        g_session->SendScancode(0x1D, true, false);
+    if ((held & kHeldAltL) != 0)
+        g_session->SendScancode(0x38, false, false);
+    if ((held & kHeldAltR) != 0)
+        g_session->SendScancode(0x38, true, false);
+    if ((held & kHeldShiftL) != 0)
+        g_session->SendScancode(0x2A, false, false);
+    if ((held & kHeldShiftR) != 0)
+        g_session->SendScancode(0x36, false, false);
+}
+
+// 逃逸热键判定。返回 true = 该按键被本地消费，调用方不要再转发远端。
+// 调用时不得持有 g_mutex（内部会取）。修饰键本身永远照常转发，否则远端组合键全废。
+bool ConsumeEscapeHotkey(int32_t code, bool down)
+{
+    const uint32_t bit = PhysicalModBit(code);
+    if (bit != 0) {
+        if (down)
+            g_heldMods.fetch_or(bit);
+        else
+            g_heldMods.fetch_and(~bit);
+        return false;
+    }
+    const int32_t hotkey = g_escapeKey.load();
+    const uint32_t wantMods = g_escapeMods.load();
+    if (hotkey == 0 || wantMods == 0)
+        return false;
+    if (!down) {
+        if (g_escapeSwallowUp.load() == code) { // 吞掉命中键的抬起，别给远端留一个孤立 UP
+            g_escapeSwallowUp.store(0);
+            return true;
+        }
+        return false;
+    }
+    // 命中后按住不放的自动重复：一并吞掉。此时 g_heldMods 已清零、匹配不上了，
+    // 不拦住的话这些重复会当普通按键发给远端（最小化失败的设备上尤其明显）
+    if (g_escapeSwallowUp.load() == code)
+        return true;
+    if (code != hotkey || FoldMods(g_heldMods.load()) != wantMods)
+        return false;
+
+    const uint32_t held = g_heldMods.exchange(0); // 已告知远端全部抬起，按干净状态重新计
+    ReleaseRemoteModifiers(held);
+    g_escapeSwallowUp.store(code);
+
+    napi_threadsafe_function tsfn = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        tsfn = g_escapeTsfn;
+    }
+    if (tsfn)
+        napi_call_threadsafe_function(tsfn, nullptr, napi_tsfn_nonblocking);
+    HMLOGI("逃逸热键命中: code=%{public}d mods=%{public}u", code, wantMods);
+    return true;
+}
+
 void DispatchTouchEvent(OH_NativeXComponent* component, void* window)
 {
     if (!g_touchEnabled.load())
@@ -317,6 +444,10 @@ void DispatchKeyEvent(OH_NativeXComponent* component, void* /*window*/)
         OH_NativeXComponent_GetKeyEventCode(event, &code) != 0)
         return;
     if (action != OH_NATIVEXCOMPONENT_KEY_ACTION_DOWN && action != OH_NATIVEXCOMPONENT_KEY_ACTION_UP)
+        return;
+
+    // 未拿到 INTERCEPT_INPUT_EVENT 权限时按键走这条路，逃逸热键同样要生效
+    if (ConsumeEscapeHotkey(static_cast<int32_t>(code), action == OH_NATIVEXCOMPONENT_KEY_ACTION_DOWN))
         return;
 
     uint16_t scancode = 0;
@@ -748,6 +879,9 @@ void OnInterceptedKey(const Input_KeyEvent* keyEvent)
     if (action != KEY_ACTION_DOWN && action != KEY_ACTION_UP)
         return;
     const int32_t code = OH_Input_GetKeyEventKeyCode(keyEvent);
+    // 拦截器把鸿蒙自身的系统快捷键也吞了，逃逸热键是全屏会话里唯一的键盘出口
+    if (ConsumeEscapeHotkey(code, action == KEY_ACTION_DOWN))
+        return;
     uint16_t scancode = 0;
     bool extended = false;
     if (!hmrdp::OhosKeyToRdpScancode(static_cast<uint32_t>(code), scancode, extended))
@@ -829,9 +963,62 @@ napi_value SetKeyInterception(napi_env env, napi_callback_info info)
         g_keyIntercepting.store(false);
     }
 
+    // 拦截器开关切换时清空修饰键按下态：失焦期间的抬起我们收不到，留着会导致下次误判
+    g_heldMods.store(0);
+    g_escapeSwallowUp.store(0);
+
     napi_value result = nullptr;
     napi_get_boolean(env, g_keyIntercepting.load(), &result);
     return result;
+}
+
+// setEscapeHotkey(mods, keyCode, onTrigger?) — 会话逃逸热键。
+// mods 位掩码 1=Ctrl 2=Alt 4=Shift；mods 或 keyCode 为 0 = 关闭。命中的按键不再转发远端。
+napi_value SetEscapeHotkey(napi_env env, napi_callback_info info)
+{
+    size_t argc = 3;
+    napi_value args[3] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t mods = 0;
+    int32_t keyCode = 0;
+    if (argc >= 1)
+        napi_get_value_uint32(env, args[0], &mods);
+    if (argc >= 2)
+        napi_get_value_int32(env, args[1], &keyCode);
+
+    // 先摘旧回调再换配置：释放要在锁外做，避免与 TSFN 回调争锁
+    napi_threadsafe_function old = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        old = g_escapeTsfn;
+        g_escapeTsfn = nullptr;
+    }
+    if (old)
+        napi_release_threadsafe_function(old, napi_tsfn_release);
+
+    const bool enable = (mods != 0 && keyCode != 0);
+    g_escapeMods.store(enable ? mods : 0);
+    g_escapeKey.store(enable ? keyCode : 0);
+    g_heldMods.store(0);
+    g_escapeSwallowUp.store(0);
+    if (enable && argc >= 3) {
+        napi_valuetype vt = napi_undefined;
+        napi_typeof(env, args[2], &vt);
+        if (vt == napi_function) {
+            napi_value resourceName = nullptr;
+            napi_create_string_utf8(env, "hmrdpEscape", NAPI_AUTO_LENGTH, &resourceName);
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (napi_create_threadsafe_function(env, args[2], nullptr, resourceName, 0, 1, nullptr,
+                                                nullptr, nullptr, CallJsEscapeCallback,
+                                                &g_escapeTsfn) != napi_ok)
+                g_escapeTsfn = nullptr; // 创建失败仅热键失效，不影响会话
+        }
+    }
+    HMLOGI("逃逸热键: enable=%{public}d mods=%{public}u code=%{public}d", enable ? 1 : 0, mods, keyCode);
+
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
 }
 
 void RegisterXComponent(napi_env env, napi_value exports)
@@ -863,6 +1050,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setClipboardImage", nullptr, SetClipboardImage, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setKeyInterception", nullptr, SetKeyInterception, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setEscapeHotkey", nullptr, SetEscapeHotkey, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setTouchEnabled", nullptr, SetTouchEnabled, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sendWheel", nullptr, SendWheel, nullptr, nullptr, nullptr, napi_default, nullptr },
     };

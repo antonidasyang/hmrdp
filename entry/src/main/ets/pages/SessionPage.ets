@@ -1,13 +1,14 @@
 import { display, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { common } from '@kit.AbilityKit';
-import { pasteboard } from '@kit.BasicServicesKit';
+import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { resolveSharePath, SHARE_TARGETS } from '../model/ShareFolders';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
 import { isPcDevice } from '../model/DeviceKit';
+import { SettingsStore } from '../model/SettingsStore';
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -186,6 +187,20 @@ export struct SessionPage {
     }
   }
 
+  /** 最小化会话窗口回鸿蒙桌面：RDP 连接保持（surface 销毁只 DetachWindow），从任务栏点回来继续。
+   *  PC 全屏会话没有系统标题栏/Dock 悬浮出口（见 SessionAbility.enterImmersive），这是主要退路。
+   *  窗口 HIDDEN 时 onWindowEvent 会自动放开键盘拦截，切回来重新抢占。 */
+  private async minimizeWindow(): Promise<void> {
+    try {
+      const win = await window.getLastWindow(this.ctx());
+      await win.minimize();
+    } catch (e) {
+      const err = e as BusinessError;
+      console.warn(`HMRDP 最小化会话窗口失败: code=${err.code}`);
+      promptAction.showToast({ message: '当前设备不支持最小化' });
+    }
+  }
+
   /** 向远端发送一组组合键（依次按下、逆序抬起）。keys: [scancode, extended(0/1)][] */
   private sendCombo(keys: number[][]): void {
     for (let i = 0; i < keys.length; i++) {
@@ -226,8 +241,22 @@ export struct SessionPage {
     hmrdp.setKeyInterception(true);
   }
 
+  /** 下发会话逃逸热键（设置页可配，默认 Ctrl+Shift+Backspace）。命中后原生不转发该键，
+   *  回调这里最小化回桌面。连接成功时下发，窗口重新聚焦时重读（改完设置无需重连）。 */
+  private armEscapeHotkey(): void {
+    const hk = SettingsStore.loadEscapeHotkey(this.ctx());
+    if (!hk.enabled || hk.mods === 0 || hk.keyCode === 0) {
+      hmrdp.setEscapeHotkey(0, 0);
+      return;
+    }
+    hmrdp.setEscapeHotkey(hk.mods, hk.keyCode, () => {
+      this.minimizeWindow();
+    });
+  }
+
   private teardownKeyInterception(): void {
     hmrdp.setKeyInterception(false);
+    hmrdp.setEscapeHotkey(0, 0);
     if (this.keyWin) {
       try {
         this.keyWin.off('windowEvent', this.winEventCb);
@@ -243,6 +272,7 @@ export struct SessionPage {
       hmrdp.setKeyInterception(false);
     } else if (type === window.WindowEventType.WINDOW_ACTIVE && this.connected) {
       hmrdp.setKeyInterception(true);
+      this.armEscapeHotkey(); // 顺带重读设置：改完热键切回会话窗口即生效，不必重连
     }
   }
 
@@ -529,6 +559,7 @@ export struct SessionPage {
       this.setupClipboard();
       if (this.isPc) {
         this.setupKeyInterception(); // PC：抢占物理键盘全键盘直通（含 Win 键）
+        this.armEscapeHotkey();      // 键盘出口：拦截器把鸿蒙系统快捷键也吞了
       }
     } else if (state === STATE_DISCONNECTED) {
       this.connected = false;
@@ -573,6 +604,12 @@ export struct SessionPage {
     Row() {
       if (this.toolbarExpanded) {
         Row({ space: 2 }) {
+          // 放在最左、与「断开」隔开：全屏会话没有标题栏出口，这是回鸿蒙桌面的唯一按钮，
+          // 挨着「断开」容易点错
+          if (this.isPc) {
+            ToolButton({ symbol: $r('sys.symbol.house'), label: '回桌面', active: false,
+              action: () => { this.minimizeWindow(); } })
+          }
           // PC/2in1 有物理键鼠，隐藏触摸相关的软件控制（键盘/触控板/复位）
           if (!this.isPc) {
             ToolButton({ symbol: $r('sys.symbol.keyboard'), label: '键盘', active: this.keyboardShown,
