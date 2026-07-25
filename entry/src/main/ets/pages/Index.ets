@@ -31,7 +31,7 @@ struct Index {
       pcName: this.askTarget ? displayName(this.askTarget) : '',
       username: this.askTarget?.username ?? '',
       onConfirm: (username: string, password: string) => {
-        this.startSession(this.askTarget!, username, password);
+        this.startSession(this.askTarget!, username, password, '');
       }
     }),
     autoCancel: true
@@ -51,11 +51,12 @@ struct Index {
     this.pcs = PCStore.load(this.ctx());
   }
 
-  private startSession(pc: PCEntry, username: string, password: string): void {
+  /** domain：关联账号的域（AccountEntry.domain）；手动凭据/无域时传空串 */
+  private startSession(pc: PCEntry, username: string, password: string, domain: string): void {
     // 只记最近使用时间，不整对象回写：列表内存态可能滞后于刚做的编辑，
     // 整对象 upsert 会把磁盘上已保存的分辨率/账号/共享目录覆盖回去。
     PCStore.touch(this.ctx(), pc.id);
-    const params = new SessionParams(pc.host, pc.port, username, password, '');
+    const params = new SessionParams(pc.host, pc.port, username, password, domain);
     params.width = pc.width;
     params.height = pc.height;
     params.scale = pc.scale;
@@ -114,17 +115,27 @@ struct Index {
     // 以磁盘最新值为准：ForEach 按id复用列表项时，点击闭包可能持有编辑前的旧对象，
     // 直接用会连到旧分辨率/旧账号。这里按id重新取一份最新的。
     const cur: PCEntry = PCStore.load(this.ctx()).find((it) => it.id === pc.id) ?? pc;
+    const acctId: string = cur.accountId ?? '';
+    // 凭据来源诊断（不打印密码本身）：弹密码框时用它区分「没关联账号」和「账号密码取不到」
+    hilog.info(0x0000, 'Index', '连接 %{public}s: accountId=%{public}s 本机hasPassword=%{public}s 用户名=%{public}s',
+      displayName(cur), acctId.length > 0 ? acctId : '(空)', `${cur.hasPassword}`,
+      cur.username.length > 0 ? cur.username : '(空)');
     // 关联账号优先解析
-    if (cur.accountId !== undefined && cur.accountId.length > 0) {
-      const acct = AccountStore.find(this.ctx(), cur.accountId);
+    if (acctId.length > 0) {
+      const acct = AccountStore.find(this.ctx(), acctId);
+      hilog.info(0x0000, 'Index', '账号 %{public}s: 找到=%{public}s hasPassword=%{public}s 域=%{public}s',
+        acctId, `${acct !== undefined}`, `${acct?.hasPassword}`,
+        acct !== undefined && acct.domain.length > 0 ? acct.domain : '(无)');
       if (acct) {
         if (acct.hasPassword) {
           AccountStore.getPassword(acct.id).then((password: string | null) => {
+            hilog.info(0x0000, 'Index', '账号密码查询结果=%{public}s',
+              password !== null ? '取到' : 'null(加密库无记录)');
             if (password !== null) {
-              this.startSession(cur, acct.username, password);
+              this.startSession(cur, acct.username, password, acct.domain);
             } else {
               // 标志说已存但加密库查不到（记录丢失）→ 询问一次，确认后补存回账号自愈
-              this.askCredentials(cur, acct.username, (u: string, p: string) => {
+              this.askCredentials(cur, acct.username, acct.domain, (u: string, p: string) => {
                 if (u === acct.username && p.length > 0) {
                   AccountStore.savePassword(acct.id, p).catch((e: BusinessError) => {
                     hilog.warn(0x0000, 'Index', '补存账号密码失败: code=%{public}d', e.code);
@@ -134,7 +145,8 @@ struct Index {
             }
           });
         } else {
-          this.askCredentials(cur, acct.username);
+          // 账号没存密码：每次询问（密码统一在「账号」页维护，这里不回存）
+          this.askCredentials(cur, acct.username, acct.domain);
         }
         return;
       }
@@ -143,10 +155,10 @@ struct Index {
     if (cur.hasPassword && cur.username.length > 0) {
       PCStore.getPassword(cur.id).then((password: string | null) => {
         if (password !== null) {
-          this.startSession(cur, cur.username, password);
+          this.startSession(cur, cur.username, password, '');
         } else {
           // 标志说已存但加密库查不到（记录丢失）→ 询问一次，确认后补存自愈
-          this.askCredentials(cur, cur.username, (u: string, p: string) => {
+          this.askCredentials(cur, cur.username, '', (u: string, p: string) => {
             if (u === cur.username && p.length > 0) {
               PCStore.savePassword(cur.id, p).catch((e: BusinessError) => {
                 hilog.warn(0x0000, 'Index', '补存电脑密码失败: code=%{public}d', e.code);
@@ -156,12 +168,14 @@ struct Index {
         }
       });
     } else {
-      this.askCredentials(cur, cur.username);
+      this.askCredentials(cur, cur.username, '');
     }
   }
 
-  /** restore：仅在「已保存的密码丢失」场景传入，确认后把输入的密码补存回加密库 */
-  private askCredentials(pc: PCEntry, username: string, restore?: (u: string, p: string) => void): void {
+  /** domain：关联账号的域，随本次会话一起用；restore：仅在「已保存的密码丢失」场景传入，
+   *  确认后把输入的密码补存回加密库（账号本就没存密码的情况不回存） */
+  private askCredentials(pc: PCEntry, username: string, domain: string,
+    restore?: (u: string, p: string) => void): void {
     this.askTarget = pc;
     // 重建 controller 以刷新 builder 参数
     this.dialogController = new CustomDialogController({
@@ -172,7 +186,7 @@ struct Index {
           if (restore !== undefined) {
             restore(u, password);
           }
-          this.startSession(pc, u, password);
+          this.startSession(pc, u, password, domain);
         }
       }),
       autoCancel: true

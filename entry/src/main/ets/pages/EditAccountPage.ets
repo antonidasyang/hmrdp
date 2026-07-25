@@ -54,7 +54,8 @@ export struct EditAccountPage {
       promptAction.showToast({ message: '请输入用户名' });
       return;
     }
-    const id = this.editingId.length > 0 ? this.editingId : AccountStore.newId();
+    const isNew = this.editingId.length === 0;
+    const id = isNew ? AccountStore.newId() : this.editingId;
 
     let hasPassword = this.hasSavedPassword;
     if (this.password.length > 0) {
@@ -77,6 +78,10 @@ export struct EditAccountPage {
       hasPassword: hasPassword
     };
     AccountStore.upsert(this.ctx(), entry);
+    if (isNew) {
+      // 供「编辑电脑」页从本页建完账号回来时自动选中（见 EditPCPage.reloadAccounts）
+      AppStorage.setOrCreate('lastCreatedAccountId', id);
+    }
     AppStorage.setOrCreate('accountsVersion', Date.now());
     this.pathStack?.pop();
   }

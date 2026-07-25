@@ -62,6 +62,8 @@ export struct EditPCPage {
   /** 选中的已保存账号 id；'' = 手动输入 */
   @State accountId: string = '';
   @StorageProp('accountsVersion') @Watch('reloadAccounts') accountsVersion: number = 0;
+  /** 点了本页「＋ 新建账号」，等建完回来自动选中新账号 */
+  private awaitingNewAccount: boolean = false;
   private pathStack: NavPathStack | null = null;
   // 目录浏览器内联状态（不走 @CustomDialog，避免回调传不回来）
   @State fbVisible: boolean = false;
@@ -170,6 +172,24 @@ export struct EditPCPage {
     if (this.accountId.length > 0 && !this.accounts.some((a) => a.id === this.accountId)) {
       this.accountId = '';
     }
+    // 从本页「＋ 新建账号」建完回来：自动选中它。否则用户以为已经关联上了，
+    // 保存后其实还是「手动输入」，连接时账号密码根本用不上。
+    if (this.awaitingNewAccount) {
+      const created: string = AppStorage.get<string>('lastCreatedAccountId') ?? '';
+      if (created.length > 0 && this.accounts.some((a) => a.id === created)) {
+        this.accountId = created;
+        this.awaitingNewAccount = false;
+        AppStorage.setOrCreate('lastCreatedAccountId', '');
+      }
+    }
+  }
+
+  /** 当前选中的已保存账号；'' = 手动输入 */
+  private selectedAccount(): AccountEntry | undefined {
+    if (this.accountId.length === 0) {
+      return undefined;
+    }
+    return this.accounts.find((a) => a.id === this.accountId);
   }
 
   /** Select 选中项：0 = 手动输入，i+1 = accounts[i] */
@@ -243,6 +263,27 @@ export struct EditPCPage {
     return [host, `${port}`];
   }
 
+  /** 把密码框里的内容存进所选账号。返回 false = 存失败（调用方应中止保存，留在本页） */
+  private async savePasswordToAccount(account: AccountEntry): Promise<boolean> {
+    try {
+      await AccountStore.savePassword(account.id, this.password);
+    } catch (e) {
+      const err = e as BusinessError;
+      promptAction.showToast({ message: `密码保存失败（错误码 ${err.code}），请重试` });
+      return false;
+    }
+    // 按 id 重取最新的账号对象再改标志：this.accounts 可能滞后于别处刚做的编辑，
+    // 拿它整对象回写会把别的字段覆盖回旧值
+    const fresh = AccountStore.find(this.ctx(), account.id);
+    if (fresh && !fresh.hasPassword) {
+      fresh.hasPassword = true;
+      AccountStore.upsert(this.ctx(), fresh);
+      AppStorage.setOrCreate('accountsVersion', Date.now());
+    }
+    promptAction.showToast({ message: `密码已保存到账号「${accountDisplay(account)}」` });
+    return true;
+  }
+
   private async save(): Promise<void> {
     const parsed = this.parseHost();
     if (parsed === null) {
@@ -252,8 +293,11 @@ export struct EditPCPage {
     const id = this.editingId.length > 0 ? this.editingId : PCStore.newId();
     const old = PCStore.load(this.ctx()).find((it) => it.id === id);
 
-    const useAccount = this.accountId.length > 0;
-    const account = useAccount ? this.accounts.find((a) => a.id === this.accountId) : undefined;
+    // 先取快照：本函数中途会 bump accountsVersion（存密码到账号），@Watch 的 reloadAccounts
+    // 可能改动 this.accountId，直接读字段会把电脑关联到另一个账号上
+    const selectedId = this.accountId;
+    const useAccount = selectedId.length > 0;
+    const account = useAccount ? this.accounts.find((a) => a.id === selectedId) : undefined;
 
     let username = this.username.trim();
     let hasPassword = this.hasSavedPassword;
@@ -261,6 +305,10 @@ export struct EditPCPage {
       // 账号提供凭据：用户名取账号（冗余存一份便于列表显示），本机不再单独存密码
       username = account.username;
       hasPassword = false;
+      // 选中账号后密码框是隐藏的，但用户可能在选账号之前就填了：存进该账号，不能静默丢弃
+      if (this.password.length > 0 && !(await this.savePasswordToAccount(account))) {
+        return;
+      }
     } else if (this.password.length > 0) {
       try {
         await PCStore.savePassword(id, this.password);
@@ -280,7 +328,7 @@ export struct EditPCPage {
       port: Number.parseInt(parsed[1]),
       username: username,
       hasPassword: hasPassword,
-      accountId: useAccount ? this.accountId : undefined,
+      accountId: useAccount ? selectedId : undefined,
       width: RESOLUTIONS[this.resolutionIndex].width,
       height: RESOLUTIONS[this.resolutionIndex].height,
       scale: SCALES[this.scaleIndex].value,
@@ -515,11 +563,21 @@ export struct EditPCPage {
               .fontColor($r('sys.color.font_secondary'))
               .alignSelf(ItemAlign.Start)
               .margin({ top: 4 })
+            // 账号没存密码时必须说明，否则用户以为选了账号就免输密码，连接时却还要手输
+            if (this.selectedAccount()?.hasPassword === false) {
+              Text('该账号未保存密码，连接时仍会询问。到「账号」页补存密码后即可免输。')
+                .fontSize(12)
+                .fontColor($r('sys.color.warning'))
+                .alignSelf(ItemAlign.Start)
+            }
           }
           Button('＋ 新建账号')
             .buttonStyle(ButtonStyleMode.TEXTUAL)
             .alignSelf(ItemAlign.Start)
             .onClick(() => {
+              // 先清掉：只认这次跳转之后新建的账号，别把上次别处建的旧 id 认成本次结果
+              AppStorage.setOrCreate('lastCreatedAccountId', '');
+              this.awaitingNewAccount = true;
               this.pathStack?.pushPathByName('editAccount', new EditAccountParams(''));
             })
 
