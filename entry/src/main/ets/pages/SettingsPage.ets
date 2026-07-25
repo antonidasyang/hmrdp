@@ -163,17 +163,23 @@ export struct SettingsPage {
             .width('100%')
 
             if (this.hotkey.enabled) {
-              // 捕获框：点一下用 focusControl 主动取焦点（鼠标点击不触发 focusOnTouch，
-              // 只靠 focusable+focusOnTouch 在 PC 上录不到键），随后按下的组合键被录入
-              Row() {
-                Text(this.capturing ? '请按下组合键…' : hotkeyLabel(this.hotkey))
-                  .fontSize(16)
-                  .fontColor(this.capturing ? $r('sys.color.font_secondary') : $r('sys.color.font_primary'))
-                Blank()
-                Text(this.capturing ? '按 Esc 取消' : '点击后按键录入')
-                  .fontSize(12)
-                  .fontColor($r('sys.color.font_tertiary'))
+              // 捕获控件必须是「真正可获焦」的组件：Row/Column 是 scope 型焦点节点，
+              // 内部没有可获焦子组件时整个 scope 就不可获焦，requestFocus 必返回 false
+              // （实测日志：unfocusable node: Row/182, focusable = 1）。Button 是可获焦叶子。
+              Button() {
+                Row() {
+                  Text(this.capturing ? '请按下组合键…' : hotkeyLabel(this.hotkey))
+                    .fontSize(16)
+                    .fontColor(this.capturing ? $r('sys.color.font_secondary') : $r('sys.color.font_primary'))
+                  Blank()
+                  Text(this.capturing ? '按 Esc 取消' : '点击后按键录入')
+                    .fontSize(12)
+                    .fontColor($r('sys.color.font_tertiary'))
+                }
+                .width('100%')
               }
+              .type(ButtonType.Normal)
+              .buttonStyle(ButtonStyleMode.NORMAL)
               .width('100%')
               .padding(12)
               .borderRadius(10)
@@ -181,9 +187,7 @@ export struct SettingsPage {
               .borderColor(this.capturing ? '#1E7FD9' : $r('sys.color.comp_border_color'))
               .backgroundColor($r('sys.color.comp_background_tertiary'))
               .id(CAPTURE_ID)
-              .focusable(true)
-              .focusOnTouch(true)
-              .defaultFocus(true) // 官方按键事件示例的用法：页面创建即持有焦点，否则收不到 onKeyEvent
+              .defaultFocus(true)
               .onClick(() => {
                 this.heldMods = 0; // 上次录入残留的按下态别带进来
                 this.lastKeyInfo = '';
@@ -248,16 +252,17 @@ export struct SettingsPage {
         }
         .padding(16)
         .width('100%')
-        // 按键事件默认冒泡（官方 ts-universal-events-key 明确说明），所以在根容器再接一次：
-        // 只要焦点落在本页任意子组件上（开关、下拉…）按键都能收到，不必非得让捕获框持有焦点
-        .onKeyEvent((event: KeyEvent) => {
-          this.onCaptureKey(event);
-        })
       }
       .width('100%')
       .height('100%')
       .align(Alignment.Top)
     }
     .title('设置')
+    // 按键从「持有焦点的节点」向上冒泡。实测本页焦点默认落在 NavDestination 上
+    // （日志：Request focus on focusView: NavDestination/164），内部容器是它的后代、
+    // 收不到冒泡，所以兜底监听必须挂在 NavDestination 这一层
+    .onKeyEvent((event: KeyEvent) => {
+      this.onCaptureKey(event);
+    })
   }
 }
