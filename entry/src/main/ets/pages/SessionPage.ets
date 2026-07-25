@@ -241,22 +241,36 @@ export struct SessionPage {
     hmrdp.setKeyInterception(true);
   }
 
-  /** 下发会话逃逸热键（设置页可配，默认 Ctrl+Shift+Backspace）。命中后原生不转发该键，
+  /** 下发「返回鸿蒙桌面」热键（设置页可配，默认 Ctrl+Shift+Backspace）。命中后原生不转发该键，
    *  回调这里最小化回桌面。连接成功时下发，窗口重新聚焦时重读（改完设置无需重连）。 */
-  private armEscapeHotkey(): void {
-    const hk = SettingsStore.loadEscapeHotkey(this.ctx());
-    if (!hk.enabled || hk.mods === 0 || hk.keyCode === 0) {
-      hmrdp.setEscapeHotkey(0, 0);
-      return;
+  private armDesktopHotkey(): void {
+    // 整段包起来：读设置或 .so 未导出该函数（HAP 与 .so 不同步）时会抛，
+    // 静默吞掉的话表现就是「热键怎么按都没反应」，必须出声
+    try {
+      const hk = SettingsStore.loadDesktopHotkey(this.ctx());
+      if (!hk.enabled || hk.mods === 0 || hk.keyCode === 0) {
+        hmrdp.setDesktopHotkey(0, 0);
+        console.info('HMRDP 返回桌面热键：已关闭');
+        return;
+      }
+      hmrdp.setDesktopHotkey(hk.mods, hk.keyCode, () => {
+        console.info('HMRDP 返回桌面热键：命中回调，最小化窗口');
+        this.minimizeWindow();
+      });
+      console.info(`HMRDP 返回桌面热键：已下发 mods=${hk.mods} code=${hk.keyCode}`);
+    } catch (e) {
+      const err = e as BusinessError;
+      console.warn(`HMRDP 返回桌面热键下发失败: code=${err.code} ${err.message}`);
     }
-    hmrdp.setEscapeHotkey(hk.mods, hk.keyCode, () => {
-      this.minimizeWindow();
-    });
   }
 
   private teardownKeyInterception(): void {
     hmrdp.setKeyInterception(false);
-    hmrdp.setEscapeHotkey(0, 0);
+    try {
+      hmrdp.setDesktopHotkey(0, 0);
+    } catch (e) {
+      // 旧 .so 无该导出，忽略
+    }
     if (this.keyWin) {
       try {
         this.keyWin.off('windowEvent', this.winEventCb);
@@ -272,7 +286,7 @@ export struct SessionPage {
       hmrdp.setKeyInterception(false);
     } else if (type === window.WindowEventType.WINDOW_ACTIVE && this.connected) {
       hmrdp.setKeyInterception(true);
-      this.armEscapeHotkey(); // 顺带重读设置：改完热键切回会话窗口即生效，不必重连
+      this.armDesktopHotkey(); // 顺带重读设置：改完热键切回会话窗口即生效，不必重连
     }
   }
 
@@ -559,7 +573,7 @@ export struct SessionPage {
       this.setupClipboard();
       if (this.isPc) {
         this.setupKeyInterception(); // PC：抢占物理键盘全键盘直通（含 Win 键）
-        this.armEscapeHotkey();      // 键盘出口：拦截器把鸿蒙系统快捷键也吞了
+        this.armDesktopHotkey();      // 键盘出口：拦截器把鸿蒙系统快捷键也吞了
       }
     } else if (state === STATE_DISCONNECTED) {
       this.connected = false;

@@ -3,16 +3,16 @@ import { common } from '@kit.AbilityKit';
 import { KeyCode } from '@kit.InputKit';
 
 const PREF_NAME = 'hmrdp_settings';
-const KEY_ESCAPE_HOTKEY = 'escape_hotkey';
+const KEY_DESKTOP_HOTKEY = 'desktop_hotkey';
 
-/** 修饰键位掩码，与原生 setEscapeHotkey 的约定一致（不含 Win：鸿蒙优先抢占，且会话中要转发给远端） */
+/** 修饰键位掩码，与原生 setDesktopHotkey 的约定一致（不含 Win：鸿蒙优先抢占，且会话中要转发给远端） */
 export const MOD_CTRL = 1;
 export const MOD_ALT = 2;
 export const MOD_SHIFT = 4;
 
-/** 会话逃逸热键：PC 全屏会话里本地消费的组合键，触发即最小化回鸿蒙桌面。
+/** 返回鸿蒙桌面热键：PC 全屏会话里本地消费的组合键，触发即最小化回鸿蒙桌面。
  *  keyCode 用 OHOS 键码（KeyCode 枚举值），原生侧按同一套值匹配。 */
-export interface EscapeHotkey {
+export interface DesktopHotkey {
   enabled: boolean;
   /** 位掩码：1=Ctrl 2=Alt 4=Shift；0 = 未配置 */
   mods: number;
@@ -21,7 +21,7 @@ export interface EscapeHotkey {
 }
 
 /** 默认 Ctrl + Shift + Backspace：远端 Windows 基本不占用这个组合 */
-export function defaultEscapeHotkey(): EscapeHotkey {
+export function defaultDesktopHotkey(): DesktopHotkey {
   return { enabled: true, mods: MOD_CTRL | MOD_SHIFT, keyCode: KeyCode.KEYCODE_DEL };
 }
 
@@ -83,7 +83,7 @@ export function keyLabel(code: number): string {
 }
 
 /** 组合键显示名，如「Ctrl + Shift + Backspace」；未配置返回空串 */
-export function hotkeyLabel(hk: EscapeHotkey): string {
+export function hotkeyLabel(hk: DesktopHotkey): string {
   if (hk.mods === 0 || hk.keyCode === 0) {
     return '';
   }
@@ -101,35 +101,50 @@ export function hotkeyLabel(hk: EscapeHotkey): string {
   return parts.join(' + ');
 }
 
-/** 全局设置（Preferences）。会话页在连接成功时读一次并下发给原生。 */
+export interface HotkeyPreset {
+  mods: number;
+  keyCode: number;
+}
+
+/** 常用组合，供设置页下拉直选（键盘录入不可用时的兜底路径）。都避开了远端 Windows 常用键 */
+export const HOTKEY_PRESETS: HotkeyPreset[] = [
+  { mods: MOD_CTRL | MOD_SHIFT, keyCode: KeyCode.KEYCODE_DEL },
+  { mods: MOD_CTRL | MOD_ALT, keyCode: KeyCode.KEYCODE_Q },
+  { mods: MOD_CTRL | MOD_ALT, keyCode: KeyCode.KEYCODE_ENTER },
+  { mods: MOD_CTRL | MOD_ALT, keyCode: KeyCode.KEYCODE_MOVE_HOME },
+  { mods: MOD_CTRL | MOD_ALT, keyCode: KeyCode.KEYCODE_MOVE_END },
+  { mods: MOD_CTRL | MOD_SHIFT, keyCode: KeyCode.KEYCODE_F12 }
+];
+
+/** 全局设置（Preferences）。会话页在连接成功/窗口重新聚焦时读一次并下发给原生。 */
 export class SettingsStore {
   private static prefs(context: common.Context): preferences.Preferences {
     return preferences.getPreferencesSync(context, { name: PREF_NAME });
   }
 
-  static loadEscapeHotkey(context: common.Context): EscapeHotkey {
-    const raw = SettingsStore.prefs(context).getSync(KEY_ESCAPE_HOTKEY, '') as string;
+  static loadDesktopHotkey(context: common.Context): DesktopHotkey {
+    const raw = SettingsStore.prefs(context).getSync(KEY_DESKTOP_HOTKEY, '') as string;
     if (raw.length === 0) {
-      return defaultEscapeHotkey();
+      return defaultDesktopHotkey();
     }
     try {
-      const hk = JSON.parse(raw) as EscapeHotkey;
+      const hk = JSON.parse(raw) as DesktopHotkey;
       // 存量数据兜底：字段缺失或触发键非法时退回默认，避免下发一个永不命中的热键
       if (hk.keyCode === undefined || hk.mods === undefined || hk.keyCode === 0 || hk.mods === 0 ||
         isModifierKey(hk.keyCode)) {
-        const def = defaultEscapeHotkey();
+        const def = defaultDesktopHotkey();
         def.enabled = hk.enabled !== false;
         return def;
       }
       return { enabled: hk.enabled !== false, mods: hk.mods, keyCode: hk.keyCode };
     } catch (e) {
-      return defaultEscapeHotkey();
+      return defaultDesktopHotkey();
     }
   }
 
-  static saveEscapeHotkey(context: common.Context, hk: EscapeHotkey): void {
+  static saveDesktopHotkey(context: common.Context, hk: DesktopHotkey): void {
     const p = SettingsStore.prefs(context);
-    p.putSync(KEY_ESCAPE_HOTKEY, JSON.stringify(hk));
+    p.putSync(KEY_DESKTOP_HOTKEY, JSON.stringify(hk));
     p.flush();
   }
 }

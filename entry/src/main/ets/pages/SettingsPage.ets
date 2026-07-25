@@ -1,12 +1,15 @@
 import { promptAction } from '@kit.ArkUI';
+// focusControl 是 ArkUI 全局对象（common.d.ts 里声明），不能从 @kit.ArkUI 导入
 import { common } from '@kit.AbilityKit';
 import { KeyCode } from '@kit.InputKit';
-import { EscapeHotkey, SettingsStore, defaultEscapeHotkey, hotkeyLabel, isModifierKey,
-  MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
+import { DesktopHotkey, HotkeyPreset, HOTKEY_PRESETS, SettingsStore, defaultDesktopHotkey,
+  hotkeyLabel, isModifierKey, MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
+
+const CAPTURE_ID = 'hmrdpHotkeyCapture';
 
 @Component
 export struct SettingsPage {
-  @State hotkey: EscapeHotkey = defaultEscapeHotkey();
+  @State hotkey: DesktopHotkey = defaultDesktopHotkey();
   /** true = 正在等用户按组合键 */
   @State capturing: boolean = false;
   /** 录入期间自己跟踪的修饰键按下态（MOD_* 位掩码） */
@@ -17,11 +20,18 @@ export struct SettingsPage {
   }
 
   aboutToAppear(): void {
-    this.hotkey = SettingsStore.loadEscapeHotkey(this.ctx());
+    this.hotkey = SettingsStore.loadDesktopHotkey(this.ctx());
   }
 
   private persist(): void {
-    SettingsStore.saveEscapeHotkey(this.ctx(), this.hotkey);
+    SettingsStore.saveDesktopHotkey(this.ctx(), this.hotkey);
+  }
+
+  private apply(mods: number, keyCode: number): void {
+    this.hotkey = { enabled: this.hotkey.enabled, mods: mods, keyCode: keyCode };
+    this.capturing = false;
+    this.persist();
+    promptAction.showToast({ message: `已设为 ${hotkeyLabel(this.hotkey)}` });
   }
 
   /** 查询单个修饰键是否按下。getModifierKeyState 是可选 API（API 12+），且 SDK 注释里
@@ -87,20 +97,30 @@ export struct SettingsPage {
     if (event.type !== KeyType.Down) {
       return;
     }
-    event.stopPropagation(); // 别让组合键继续冒泡触发页面上的其它响应
+    event.stopPropagation(); // 别让组合键继续冒泡（Backspace 等键会被上层当返回处理）
     const code = event.keyCode;
     if (isModifierKey(code)) {
       return; // Win/Meta 等也不能当触发键
+    }
+    if (code === KeyCode.KEYCODE_ESCAPE && this.modsOf(event) === 0) {
+      this.capturing = false; // 空按 Esc = 放弃录入
+      return;
     }
     const mods = this.modsOf(event);
     if (mods === 0) {
       promptAction.showToast({ message: '需要配合 Ctrl / Alt / Shift，请重新按一次' });
       return;
     }
-    this.hotkey = { enabled: this.hotkey.enabled, mods: mods, keyCode: code };
-    this.capturing = false;
-    this.persist();
-    promptAction.showToast({ message: `已设为 ${hotkeyLabel(this.hotkey)}` });
+    this.apply(mods, code);
+  }
+
+  private presetLabels(): SelectOption[] {
+    return HOTKEY_PRESETS.map((p: HotkeyPreset): SelectOption =>
+      ({ value: hotkeyLabel({ enabled: true, mods: p.mods, keyCode: p.keyCode }) }));
+  }
+
+  private presetIndex(): number {
+    return HOTKEY_PRESETS.findIndex((p) => p.mods === this.hotkey.mods && p.keyCode === this.hotkey.keyCode);
   }
 
   @Builder
@@ -120,7 +140,7 @@ export struct SettingsPage {
           Column({ space: 12 }) {
             Row() {
               Column({ space: 2 }) {
-                Text('逃逸热键')
+                Text('返回鸿蒙桌面热键')
                   .fontSize(15)
                 Text('全屏会话中按下即最小化回桌面，连接不断')
                   .fontSize(12)
@@ -139,46 +159,63 @@ export struct SettingsPage {
             .width('100%')
 
             if (this.hotkey.enabled) {
-              // 捕获框：点一下取得焦点，随后按下的组合键被录入（主窗口不在键盘拦截态，按键正常送到 ArkUI）
+              // 捕获框：点一下用 focusControl 主动取焦点（鼠标点击不触发 focusOnTouch，
+              // 只靠 focusable+focusOnTouch 在 PC 上录不到键），随后按下的组合键被录入
               Row() {
                 Text(this.capturing ? '请按下组合键…' : hotkeyLabel(this.hotkey))
                   .fontSize(16)
                   .fontColor(this.capturing ? $r('sys.color.font_secondary') : $r('sys.color.font_primary'))
                 Blank()
-                Text(this.capturing ? '按 Esc 取消' : '点击修改')
+                Text(this.capturing ? '按 Esc 取消' : '点击后按键录入')
                   .fontSize(12)
                   .fontColor($r('sys.color.font_tertiary'))
               }
               .width('100%')
               .padding(12)
               .borderRadius(10)
-              .borderWidth(1)
-              .borderColor(this.capturing ? '#1E7FD9' : $r('sys.color.comp_background_tertiary'))
+              .borderWidth(this.capturing ? 2 : 1)
+              .borderColor(this.capturing ? '#1E7FD9' : $r('sys.color.comp_border_color'))
               .backgroundColor($r('sys.color.comp_background_tertiary'))
+              .id(CAPTURE_ID)
               .focusable(true)
               .focusOnTouch(true)
               .onClick(() => {
                 this.heldMods = 0; // 上次录入残留的按下态别带进来
                 this.capturing = true;
+                focusControl.requestFocus(CAPTURE_ID);
+              })
+              .onBlur(() => {
+                this.capturing = false; // 焦点跑了就退出录入，别让提示一直挂着
               })
               .onKeyEvent((event: KeyEvent) => {
-                // Esc 单独处理：它也可能是用户想录的键，但没带修饰键时按取消更符合直觉
-                if (this.capturing && event.type === KeyType.Down &&
-                  event.keyCode === KeyCode.KEYCODE_ESCAPE && this.modsOf(event) === 0) {
-                  this.capturing = false;
-                  return;
-                }
                 this.onCaptureKey(event);
               })
+
+              // 兜底路径：某些设备上 ArkUI 收不到带修饰键的组合（被系统先吃掉），直接选预设
+              Row() {
+                Text('常用组合')
+                  .fontSize(14)
+                Blank()
+                Select(this.presetLabels())
+                  .selected(this.presetIndex())
+                  .value(this.presetIndex() >= 0 ? hotkeyLabel(this.hotkey) : '选择…')
+                  .onSelect((index: number) => {
+                    this.apply(HOTKEY_PRESETS[index].mods, HOTKEY_PRESETS[index].keyCode);
+                  })
+              }
+              .width('100%')
+
+              Text(`当前：${hotkeyLabel(this.hotkey)}（mods=${this.hotkey.mods} code=${this.hotkey.keyCode}）`)
+                .fontSize(12)
+                .fontColor($r('sys.color.font_tertiary'))
+                .alignSelf(ItemAlign.Start)
 
               Button('恢复默认（Ctrl + Shift + Backspace）')
                 .buttonStyle(ButtonStyleMode.TEXTUAL)
                 .alignSelf(ItemAlign.Start)
                 .onClick(() => {
-                  const def = defaultEscapeHotkey();
-                  this.hotkey = { enabled: this.hotkey.enabled, mods: def.mods, keyCode: def.keyCode };
-                  this.capturing = false;
-                  this.persist();
+                  const def = defaultDesktopHotkey();
+                  this.apply(def.mods, def.keyCode);
                 })
 
               Text('仅 PC/2in1 的独立全屏会话生效。这个组合键会被本地吃掉、不再发给远端电脑，' +
