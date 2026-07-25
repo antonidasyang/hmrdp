@@ -8,7 +8,9 @@ import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
 import { isPcDevice } from '../model/DeviceKit';
-import { SettingsStore } from '../model/SettingsStore';
+import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
+  MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
+import { inputConsumer, KeyCode } from '@kit.InputKit';
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -144,6 +146,17 @@ export struct SessionPage {
   private winEventCb: (t: window.WindowEventType) => void = (t: window.WindowEventType) => {
     this.onWindowEvent(t);
   };
+  /** 物理键盘拦截是否真的生效（受限权限未授予时为 false）。决定热键走哪条路：
+   *  拦截生效 = 事件不再下发，只有原生 OnInterceptedKey 能拿到；
+   *  拦截未生效 = 事件正常下发，inputConsumer 的组合键订阅才会触发。 */
+  private keyIntercepting: boolean = false;
+  // 「返回鸿蒙桌面」热键：已向系统注册的组合（inputConsumer），用于 off 时精确注销
+  private hotkeyRegs: inputConsumer.HotkeyOptions[] = [];
+  private hotkeyCb: (options: inputConsumer.HotkeyOptions) => void =
+    (options: inputConsumer.HotkeyOptions) => {
+      console.info(`HMRDP 返回桌面热键：系统回调命中 finalKey=${options.finalKey}`);
+      this.minimizeWindow();
+    };
 
   private clampOffsets(): void {
     // 缩放后允许平移的范围 = 溢出的一半
@@ -238,34 +251,126 @@ export struct SessionPage {
       this.keyWin.on('windowEvent', this.winEventCb);
     } catch (e) {
     }
-    hmrdp.setKeyInterception(true);
+    // 返回值 = 是否真的处于拦截态。未授予 INTERCEPT_INPUT_EVENT 时恒 false，
+    // 此时 OnInterceptedKey 一次都不会被调用，热键只能靠 inputConsumer 那条路。
+    this.keyIntercepting = hmrdp.setKeyInterception(true);
+    console.info(`HMRDP 键盘拦截态=${this.keyIntercepting}`);
+    this.armDesktopHotkey(true);
   }
 
   /** 下发「返回鸿蒙桌面」热键（设置页可配，默认 Ctrl+Shift+Backspace）。命中后原生不转发该键，
    *  回调这里最小化回桌面。连接成功时下发，窗口重新聚焦时重读（改完设置无需重连）。 */
-  private armDesktopHotkey(): void {
-    // 整段包起来：读设置或 .so 未导出该函数（HAP 与 .so 不同步）时会抛，
-    // 静默吞掉的话表现就是「热键怎么按都没反应」，必须出声
+  /** notify=true 时用 toast 报一次结果（连接成功那次）；窗口重新聚焦的重复武装不打扰用户 */
+  private armDesktopHotkey(notify: boolean): void {
+    let hk: DesktopHotkey;
     try {
-      const hk = SettingsStore.loadDesktopHotkey(this.ctx());
-      if (!hk.enabled || hk.mods === 0 || hk.keyCode === 0) {
+      hk = SettingsStore.loadDesktopHotkey(this.ctx());
+    } catch (e) {
+      hk = defaultDesktopHotkey(); // 读设置失败也要有热键可用，别整个功能哑掉
+    }
+    if (!hk.enabled || hk.mods === 0 || hk.keyCode === 0) {
+      this.unregisterSystemHotkey();
+      try {
         hmrdp.setDesktopHotkey(0, 0);
-        console.info('HMRDP 返回桌面热键：已关闭');
-        return;
+      } catch (e) {
       }
+      console.info('HMRDP 返回桌面热键：已关闭');
+      return;
+    }
+    // 路线一：拦截态下按键不再下发给任何人（源码 EventInterceptorHandler::HandleKeyEvent
+    // 命中即 return，不调 nextHandler_），只有我们自己的拦截回调能拿到 → 原生匹配。
+    let nativeOk = false;
+    try {
       hmrdp.setDesktopHotkey(hk.mods, hk.keyCode, () => {
-        console.info('HMRDP 返回桌面热键：命中回调，最小化窗口');
+        console.info('HMRDP 返回桌面热键：原生回调命中');
         this.minimizeWindow();
       });
-      console.info(`HMRDP 返回桌面热键：已下发 mods=${hk.mods} code=${hk.keyCode}`);
+      nativeOk = true;
     } catch (e) {
       const err = e as BusinessError;
-      console.warn(`HMRDP 返回桌面热键下发失败: code=${err.code} ${err.message}`);
+      console.warn(`HMRDP 返回桌面热键：下发原生失败 code=${err.code} ${err.message}`);
     }
+    // 路线二：拦截未生效（无受限权限）时事件正常下发，走系统组合键订阅
+    const sysCount = this.registerSystemHotkey(hk);
+    const label = hotkeyLabel(hk);
+    console.info(`HMRDP 返回桌面热键：${label} 原生=${nativeOk} 系统订阅=${sysCount} 拦截态=${this.keyIntercepting}`);
+    // 直接显示给用户：没有 hdc 也能看出热键到底武装上没有、走的哪条路
+    if (notify) {
+      promptAction.showToast({
+        message: `返回桌面热键 ${label}（${this.keyIntercepting ? '拦截态·原生' : `系统订阅 ${sysCount} 组`}）`,
+        duration: 2500
+      });
+    }
+  }
+
+  /** 修饰键位掩码 -> 该修饰键的左右键码。inputConsumer 的 preKeys 认具体键码，
+   *  左右两个都要各注册一遍，否则只有其中一侧生效。 */
+  private modKeyCodes(mods: number, bit: number, left: number, right: number): number[] {
+    return (mods & bit) !== 0 ? [left, right] : [];
+  }
+
+  /** 用 inputConsumer 向系统注册组合键（API 14，无需权限）。仅在键盘拦截未生效时才可能触发：
+   *  拦截生效时事件在 EventInterceptorHandler 就被吃掉，根本到不了 EventSubscriberHandler。
+   *  官方文档 preKeys 取值范围 [1,4]，但 SDK 注释写「最多两个修饰键」，按 2 个处理更稳。
+   *  返回成功注册的组合数。 */
+  private registerSystemHotkey(hk: DesktopHotkey): number {
+    this.unregisterSystemHotkey();
+    if (!hk.enabled || hk.mods === 0 || hk.keyCode === 0) {
+      return 0;
+    }
+    const ctrls = this.modKeyCodes(hk.mods, MOD_CTRL, KeyCode.KEYCODE_CTRL_LEFT, KeyCode.KEYCODE_CTRL_RIGHT);
+    const alts = this.modKeyCodes(hk.mods, MOD_ALT, KeyCode.KEYCODE_ALT_LEFT, KeyCode.KEYCODE_ALT_RIGHT);
+    const shifts = this.modKeyCodes(hk.mods, MOD_SHIFT, KeyCode.KEYCODE_SHIFT_LEFT, KeyCode.KEYCODE_SHIFT_RIGHT);
+    // 三个修饰键超出 inputConsumer 上限（preKeys 最多 2 个），交给原生路径
+    const groups: number[][] = [ctrls, alts, shifts].filter((g) => g.length > 0);
+    if (groups.length > 2) {
+      console.info('HMRDP 返回桌面热键：3 个修饰键超出系统接口上限，仅走原生判定');
+      return 0;
+    }
+    // 左右键的全部组合各注册一次
+    const combos: number[][] = groups.length === 0 ? [[]] : groups[0].map((k): number[] => [k]);
+    const expanded: number[][] = [];
+    if (groups.length === 2) {
+      for (const a of combos) {
+        for (const b of groups[1]) {
+          expanded.push([a[0], b]);
+        }
+      }
+    }
+    const finalCombos: number[][] = groups.length === 2 ? expanded : combos;
+    for (const preKeys of finalCombos) {
+      const options: inputConsumer.HotkeyOptions = {
+        preKeys: preKeys,
+        finalKey: hk.keyCode,
+        isRepeat: false
+      };
+      try {
+        inputConsumer.on('hotkeyChange', options, this.hotkeyCb);
+        this.hotkeyRegs.push(options);
+      } catch (e) {
+        const err = e as BusinessError;
+        // 4200002 = 该组合被系统占用，4200003 = 已被其它应用订阅
+        console.warn(`HMRDP 返回桌面热键：系统注册失败 preKeys=${preKeys} code=${err.code} ${err.message}`);
+      }
+    }
+    console.info(`HMRDP 返回桌面热键：系统注册 ${this.hotkeyRegs.length}/${finalCombos.length} 组 finalKey=${hk.keyCode}`);
+    return this.hotkeyRegs.length;
+  }
+
+  private unregisterSystemHotkey(): void {
+    for (const options of this.hotkeyRegs) {
+      try {
+        inputConsumer.off('hotkeyChange', options, this.hotkeyCb);
+      } catch (e) {
+        // 未注册成功的组合忽略
+      }
+    }
+    this.hotkeyRegs = [];
   }
 
   private teardownKeyInterception(): void {
     hmrdp.setKeyInterception(false);
+    this.unregisterSystemHotkey();
     try {
       hmrdp.setDesktopHotkey(0, 0);
     } catch (e) {
@@ -285,8 +390,8 @@ export struct SessionPage {
     if (type === window.WindowEventType.WINDOW_INACTIVE || type === window.WindowEventType.WINDOW_HIDDEN) {
       hmrdp.setKeyInterception(false);
     } else if (type === window.WindowEventType.WINDOW_ACTIVE && this.connected) {
-      hmrdp.setKeyInterception(true);
-      this.armDesktopHotkey(); // 顺带重读设置：改完热键切回会话窗口即生效，不必重连
+      this.keyIntercepting = hmrdp.setKeyInterception(true);
+      this.armDesktopHotkey(false); // 顺带重读设置：改完热键切回会话窗口即生效，不必重连
     }
   }
 
@@ -572,8 +677,8 @@ export struct SessionPage {
       this.errorText = '';
       this.setupClipboard();
       if (this.isPc) {
-        this.setupKeyInterception(); // PC：抢占物理键盘全键盘直通（含 Win 键）
-        this.armDesktopHotkey();      // 键盘出口：拦截器把鸿蒙系统快捷键也吞了
+        // 抢占物理键盘全键盘直通（含 Win 键）；拿到拦截态后内部再武装返回桌面热键
+        this.setupKeyInterception();
       }
     } else if (state === STATE_DISCONNECTED) {
       this.connected = false;

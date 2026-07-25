@@ -12,6 +12,8 @@ export struct SettingsPage {
   @State hotkey: DesktopHotkey = defaultDesktopHotkey();
   /** true = 正在等用户按组合键 */
   @State capturing: boolean = false;
+  /** 最近收到的按键，直接显示在界面上：录不进时能一眼看出是「没收到事件」还是「组合不合法」 */
+  @State lastKeyInfo: string = '';
   /** 录入期间自己跟踪的修饰键按下态（MOD_* 位掩码） */
   private heldMods: number = 0;
 
@@ -90,6 +92,8 @@ export struct SettingsPage {
     if (!this.capturing) {
       return;
     }
+    console.info(`HMRDP 热键录入：收到按键 code=${event.keyCode} type=${event.type}`);
+    this.lastKeyInfo = `收到按键 code=${event.keyCode} type=${event.type}`;
     // 修饰键的按下/抬起都要跟，抬起事件不能提前被 KeyType.Down 过滤掉
     if (this.trackModifier(event)) {
       return;
@@ -179,10 +183,16 @@ export struct SettingsPage {
               .id(CAPTURE_ID)
               .focusable(true)
               .focusOnTouch(true)
+              .defaultFocus(true) // 官方按键事件示例的用法：页面创建即持有焦点，否则收不到 onKeyEvent
               .onClick(() => {
                 this.heldMods = 0; // 上次录入残留的按下态别带进来
+                this.lastKeyInfo = '';
                 this.capturing = true;
-                focusControl.requestFocus(CAPTURE_ID);
+                const ok = focusControl.requestFocus(CAPTURE_ID);
+                console.info(`HMRDP 热键录入：requestFocus=${ok}`);
+                if (!ok) {
+                  this.lastKeyInfo = '取焦点失败，请改用下面的「常用组合」';
+                }
               })
               .onBlur(() => {
                 this.capturing = false; // 焦点跑了就退出录入，别让提示一直挂着
@@ -205,7 +215,8 @@ export struct SettingsPage {
               }
               .width('100%')
 
-              Text(`当前：${hotkeyLabel(this.hotkey)}（mods=${this.hotkey.mods} code=${this.hotkey.keyCode}）`)
+              Text(`当前：${hotkeyLabel(this.hotkey)}（mods=${this.hotkey.mods} code=${this.hotkey.keyCode}）` +
+                (this.lastKeyInfo.length > 0 ? `\n${this.lastKeyInfo}` : ''))
                 .fontSize(12)
                 .fontColor($r('sys.color.font_tertiary'))
                 .alignSelf(ItemAlign.Start)
@@ -237,6 +248,11 @@ export struct SettingsPage {
         }
         .padding(16)
         .width('100%')
+        // 按键事件默认冒泡（官方 ts-universal-events-key 明确说明），所以在根容器再接一次：
+        // 只要焦点落在本页任意子组件上（开关、下拉…）按键都能收到，不必非得让捕获框持有焦点
+        .onKeyEvent((event: KeyEvent) => {
+          this.onCaptureKey(event);
+        })
       }
       .width('100%')
       .height('100%')
