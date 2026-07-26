@@ -219,11 +219,13 @@ export struct SettingsPage {
               }
               .width('100%')
 
-              Text(`当前：${hotkeyLabel(this.hotkey)}（mods=${this.hotkey.mods} code=${this.hotkey.keyCode}）` +
-                (this.lastKeyInfo.length > 0 ? `\n${this.lastKeyInfo}` : ''))
-                .fontSize(12)
-                .fontColor($r('sys.color.font_tertiary'))
-                .alignSelf(ItemAlign.Start)
+              // 录入期间的反馈；平时不占位（原来这里还带 mods/code 调试读数，已去掉）
+              if (this.lastKeyInfo.length > 0) {
+                Text(this.lastKeyInfo)
+                  .fontSize(12)
+                  .fontColor($r('sys.color.font_tertiary'))
+                  .alignSelf(ItemAlign.Start)
+              }
 
               Button('恢复默认（Ctrl + Alt + Backspace）')
                 .buttonStyle(ButtonStyleMode.TEXTUAL)
