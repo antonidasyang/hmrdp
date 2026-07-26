@@ -2,7 +2,7 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { process } from '@kit.ArkTS';
+import { probeActiveSessions } from '../model/SessionProbe';
 
 const TAG: string = 'HMRDP';
 
@@ -45,25 +45,25 @@ export default class EntryAbility extends UIAbility {
   /** 返回值语义见 @ohos.window：resolve(true) = 不关闭窗口，resolve(false) = 继续关闭 */
   private async confirmClose(): Promise<boolean> {
     hilog.info(0x0000, TAG, 'windowWillClose 触发');
-    let count = 0;
+    // 不能用 getRunningProcessInformation 数会话：实测它只返回调用方自己的进程
+    // （真机日志只有 com.d2ssoft.hmrdp#29234，会话子进程没出现）。改用公共事件探测。
+    let labels: string[] = [];
     try {
-      count = await this.activeSessionCount();
+      labels = await probeActiveSessions(300);
     } catch (e) {
       const err = e as BusinessError;
-      hilog.warn(0x0000, TAG, '查询会话进程失败: code=%{public}d', err.code);
-      return false; // 数不出来就别拦着用户关窗
+      hilog.warn(0x0000, TAG, '探测活跃会话失败: code=%{public}d', err.code);
+      return false; // 探不出来就别拦着用户关窗
     }
-    hilog.info(0x0000, TAG, '关闭主窗口：活跃会话数=%{public}d', count);
-    if (count === 0) {
+    hilog.info(0x0000, TAG, '关闭主窗口：活跃会话数=%{public}d', labels.length);
+    if (labels.length === 0 || !this.mainWin) {
       return false;
     }
-    if (!this.mainWin) {
-      return false;
-    }
+    const detail = labels.length <= 3 ? `（${labels.join('、')}）` : '';
     try {
       const result = await this.mainWin.getUIContext().getPromptAction().showDialog({
         title: '还有正在进行的远程连接',
-        message: `当前有 ${count} 个远程桌面连接。关闭主窗口会断开全部连接。`,
+        message: `当前有 ${labels.length} 个远程桌面连接${detail}。关闭主窗口会断开全部连接。`,
         buttons: [
           { text: '取消', color: '#1E7FD9' },
           { text: '关闭并断开', color: '#E05555' }
@@ -75,19 +75,6 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(0x0000, TAG, '关闭确认框失败: code=%{public}d', err.code);
       return false;
     }
-  }
-
-  /** 活跃会话数 = 本应用除自己以外的进程数。PC 上每个会话窗口都是独立进程
-   *  （SessionAbility + NEW_PROCESS_ATTACH_TO_PARENT）。
-   *  按 pid 排除自身而不是按进程名比对包名：主进程名不一定恰好等于包名，
-   *  比错了会把自己算成会话，导致没有会话时也弹确认框。 */
-  private async activeSessionCount(): Promise<number> {
-    const processes = await this.context.getApplicationContext().getRunningProcessInformation();
-    const selfPid = process.pid;
-    const others = processes.filter((p) => p.pid !== selfPid);
-    hilog.info(0x0000, TAG, '本应用进程: %{public}s (自身 pid=%{public}d)',
-      processes.map((p) => `${p.processName}#${p.pid}`).join(', '), selfPid);
-    return others.length;
   }
 
   onWindowStageDestroy(): void {

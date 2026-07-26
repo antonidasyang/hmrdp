@@ -11,6 +11,7 @@ import { isPcDevice } from '../model/DeviceKit';
 import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
   MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
 import { inputConsumer, KeyCode } from '@kit.InputKit';
+import { SessionAliveResponder } from '../model/SessionProbe';
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -157,6 +158,8 @@ export struct SessionPage {
    *  拦截生效 = 事件不再下发，只有原生 OnInterceptedKey 能拿到；
    *  拦截未生效 = 事件正常下发，inputConsumer 的组合键订阅才会触发。 */
   private keyIntercepting: boolean = false;
+  /** 应答主窗口的「还有会话在跑吗」探测：主窗口关闭前据此弹确认框 */
+  private aliveResponder: SessionAliveResponder = new SessionAliveResponder();
   // 「返回鸿蒙桌面」热键：已向系统注册的组合（inputConsumer），用于 off 时精确注销
   private hotkeyRegs: inputConsumer.HotkeyOptions[] = [];
   private hotkeyCb: (options: inputConsumer.HotkeyOptions) => void =
@@ -683,6 +686,8 @@ export struct SessionPage {
       this.connected = true;
       this.errorText = '';
       this.setupClipboard();
+      // 让主窗口能探测到这个会话：关闭主窗口前会据此提示「会断开全部连接」
+      this.aliveResponder.start(this.params.host);
       if (this.isPc) {
         // 抢占物理键盘全键盘直通（含 Win 键）；拿到拦截态后内部再武装返回桌面热键
         this.setupKeyInterception();
@@ -930,6 +935,7 @@ export struct SessionPage {
           this.applyFullscreen(false); // 应用内会话退出时恢复系统栏；独立窗口整体关闭无需恢复
         }
       }
+      this.aliveResponder.stop();
       this.teardownClipboard();
       this.teardownKeyInterception();
       this.releaseKeyboard();
