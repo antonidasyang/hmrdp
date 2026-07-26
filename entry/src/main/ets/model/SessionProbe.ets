@@ -26,16 +26,24 @@ function sleep(ms: number): Promise<void> {
 
 function publishEvent(event: string, params?: Record<string, Object>): Promise<void> {
   return new Promise<void>((resolve) => {
-    const options: commonEventManager.CommonEventPublishData = {
-      bundleName: APP_BUNDLE,
-      parameters: params
-    };
-    commonEventManager.publish(event, options, (err: BusinessError) => {
-      if (err) {
-        console.warn(`HMRDP 会话探测：发布 ${event} 失败 code=${err.code}`);
-      }
+    // 不能写成 parameters: params —— params 为 undefined 时「键存在但值是 undefined」，
+    // ArkTS 参数校验直接抛 401（实测日志：探测失败 code=401）。分开构造。
+    const options: commonEventManager.CommonEventPublishData = params !== undefined
+      ? { bundleName: APP_BUNDLE, parameters: params }
+      : { bundleName: APP_BUNDLE };
+    try {
+      commonEventManager.publish(event, options, (err: BusinessError) => {
+        if (err) {
+          console.warn(`HMRDP 会话探测：发布 ${event} 回调报错 code=${err.code}`);
+        }
+        resolve();
+      });
+    } catch (e) {
+      // publish 对非法参数是同步抛，必须接住，否则上层 await 直接失败、连等待都不做
+      const err = e as BusinessError;
+      console.warn(`HMRDP 会话探测：发布 ${event} 抛异常 code=${err.code} msg=${err.message}`);
       resolve();
-    });
+    }
   });
 }
 
@@ -54,18 +62,20 @@ export class SessionAliveResponder {
         this.subscriber = sub;
         commonEventManager.subscribe(sub, (err: BusinessError) => {
           if (err) {
+            console.warn(`HMRDP 会话探测：接收探测报错 code=${err.code}`);
             return;
           }
           const params: Record<string, Object> = {
             'pid': process.pid as Object,
             'label': this.label as Object
           };
+          console.info(`HMRDP 会话探测：收到探测，应答 pid=${process.pid} label=${this.label}`);
           publishEvent(EVENT_ALIVE, params);
         });
-        console.info('HMRDP 会话探测：已订阅存活探测');
+        console.info(`HMRDP 会话探测：已订阅存活探测 pid=${process.pid}`);
       })
       .catch((e: BusinessError) => {
-        console.warn(`HMRDP 会话探测：订阅失败 code=${e.code}`);
+        console.warn(`HMRDP 会话探测：订阅探测失败 code=${e.code} msg=${e.message}`);
       });
   }
 
@@ -88,27 +98,38 @@ export class SessionAliveResponder {
 export async function probeActiveSessions(waitMs: number): Promise<string[]> {
   const found = new Map<number, string>();
   let subscriber: commonEventManager.CommonEventSubscriber | undefined = undefined;
+  // 每一步单独接异常并各记一条日志：出问题时能直接看出卡在创建订阅者、订阅还是发布
   try {
     subscriber = await commonEventManager.createSubscriber({ events: [EVENT_ALIVE] });
-    commonEventManager.subscribe(subscriber, (err: BusinessError, data: commonEventManager.CommonEventData) => {
-      if (err || data.parameters === undefined) {
-        return;
-      }
-      const pid = data.parameters['pid'] as number;
-      const label = data.parameters['label'] as string;
-      found.set(pid !== undefined ? pid : 0, label !== undefined && label.length > 0 ? label : '远程桌面');
-    });
-    await publishEvent(EVENT_PROBE);
-    await sleep(waitMs);
   } catch (e) {
     const err = e as BusinessError;
-    console.warn(`HMRDP 会话探测：探测失败 code=${err.code}`);
-  } finally {
-    if (subscriber !== undefined) {
-      try {
-        commonEventManager.unsubscribe(subscriber);
-      } catch (e) {
-      }
+    console.warn(`HMRDP 会话探测：创建订阅者失败 code=${err.code} msg=${err.message}`);
+  }
+  if (subscriber !== undefined) {
+    try {
+      commonEventManager.subscribe(subscriber,
+        (err: BusinessError, data: commonEventManager.CommonEventData) => {
+          if (err) {
+            console.warn(`HMRDP 会话探测：接收应答报错 code=${err.code}`);
+            return;
+          }
+          const params = data.parameters;
+          const pid = params !== undefined ? params['pid'] as number : 0;
+          const label = params !== undefined ? params['label'] as string : '';
+          console.info(`HMRDP 会话探测：收到应答 pid=${pid} label=${label}`);
+          found.set(pid !== undefined ? pid : 0, label !== undefined && label.length > 0 ? label : '远程桌面');
+        });
+    } catch (e) {
+      const err = e as BusinessError;
+      console.warn(`HMRDP 会话探测：订阅失败 code=${err.code} msg=${err.message}`);
+    }
+  }
+  await publishEvent(EVENT_PROBE);
+  await sleep(waitMs);
+  if (subscriber !== undefined) {
+    try {
+      commonEventManager.unsubscribe(subscriber);
+    } catch (e) {
     }
   }
   const labels: string[] = [];
