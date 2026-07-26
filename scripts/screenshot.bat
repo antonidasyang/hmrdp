@@ -22,17 +22,12 @@ if "%NAME%"=="" (
 )
 
 if not exist "tmp\shots" mkdir "tmp\shots"
-set "REMOTE=/data/local/tmp/hmrdp_shot.png"
-set "LOCAL=tmp\shots\%NAME%.png"
+REM snapshot_display 只认 .jpeg 后缀（实测：suffix must be .jpeg）
+set "REMOTE=/data/local/tmp/hmrdp_shot.jpeg"
+set "LOCAL=tmp\shots\%NAME%.jpeg"
 
 echo [抓图] 设备端截屏...
-"%HDC%" shell snapshot_display -f %REMOTE% >nul 2>nul
-if errorlevel 1 (
-  echo [提示] snapshot_display 失败，改用 jpeg 再试
-  set "REMOTE=/data/local/tmp/hmrdp_shot.jpeg"
-  set "LOCAL=tmp\shots\%NAME%.jpeg"
-  "%HDC%" shell snapshot_display -f !REMOTE!
-)
+"%HDC%" shell snapshot_display -f %REMOTE%
 
 echo [取回] %LOCAL%
 "%HDC%" file recv %REMOTE% "%LOCAL%" >nul
