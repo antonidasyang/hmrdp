@@ -15,7 +15,12 @@
 - [ ] 应用图标（已内置分层图标，`AppScope/resources/base/media/`，另备 216×216 市场用图）。
 - [ ] 应用名称：HMRDP（远程桌面）。
 - [ ] 一句话简介与详细介绍（强调：开源免费、点对点直连、不收集数据）。
-- [ ] 截图（真机会话页、电脑列表页、添加电脑页）。
+- [ ] 截图（真机抓，建议 5 张）：电脑列表页、添加/编辑电脑页、账号页、设置页、会话页（工具条展开）。
+      抓图：`scripts\screenshot.bat 01-电脑列表` → 存到 `tmp\shots\`，会打印实际像素尺寸。
+      改尺寸：`powershell -ExecutionPolicy Bypass -File scripts\resize_shots.ps1 -Width 1920 -Height 1080`
+      （`-Mode fill` 居中裁切铺满 / `-Mode fit` 完整留边；AGC 单张一般限 2MB 内）。
+      截图注意：① 会话页别露真实内网 IP、主机名、账号；② 远端桌面保持干净，别出现第三方软件
+      或网页界面（审核会挑版权）；③ 等连接后的 toast 消失再截。
 - [ ] **隐私政策 URL**：将 `docs/PRIVACY_POLICY.md` 内容发布到可公开访问的网址后填入。
 - [ ] 权限使用说明：
       - `ohos.permission.INTERNET`：与用户指定的远程电脑建立 RDP 连接。
