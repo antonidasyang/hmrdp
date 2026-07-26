@@ -97,12 +97,15 @@ struct ToolButton {
   /** 线条太细的符号（如 circle）加粗后在深色工具条上更清晰。
    *  用数值字重：HMSymbolVF 的 wght 轴到 900，900 即最粗，比 FontWeight.Bold 更实 */
   @Prop bold: boolean = false;
+  /** 符号字号，默认与其余图标一致。circle 是纯圆、视觉面积偏大，可单独调小。
+   *  不能叫 size：与 CustomComponent 的通用属性重名，编译期报 not assignable */
+  @Prop iconSize: number = 22;
   action: () => void = () => {};
 
   build() {
     Column({ space: 2 }) {
       SymbolGlyph(this.symbol)
-        .fontSize(22)
+        .fontSize(this.iconSize)
         .fontWeight(this.bold ? 900 : 400)
         .fontColor([this.active ? '#4DA3FF' : Color.White])
       Text(this.label)
@@ -731,7 +734,8 @@ export struct SessionPage {
           // 挨着「断开」容易点错。图标用系统符号 circle：SDK 没有鸿蒙 logo 符号，
           // 自绘华为商标又有上架审核风险，圆环是最接近且安全的表达
           if (this.isPc) {
-            ToolButton({ symbol: $r('sys.symbol.circle'), label: '回鸿蒙', active: false, bold: true,
+            ToolButton({ symbol: $r('sys.symbol.circle'), label: '回鸿蒙', active: false,
+              bold: true, iconSize: 20,
               action: () => { this.minimizeWindow(); } })
           }
           // PC/2in1 有物理键鼠，隐藏触摸相关的软件控制（键盘/触控板/复位）
