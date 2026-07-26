@@ -1,4 +1,4 @@
-import { SymbolGlyphModifier, window } from '@kit.ArkUI';
+import { SymbolGlyphModifier, window, display } from '@kit.ArkUI';
 import { common, Want, StartOptions, AbilityConstant, contextConstant } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -13,7 +13,7 @@ import { PCEntry, displayName } from '../model/PCEntry';
 import { PCStore } from '../model/PCStore';
 import { AccountStore } from '../model/AccountStore';
 import { DEFAULT_SHARE_DIR, shareLabel, ensureFilePermissions } from '../model/ShareFolders';
-import { isPcDevice } from '../model/DeviceKit';
+import { isPcDevice, isLargeScreen } from '../model/DeviceKit';
 import { PasswordDialog } from '../components/PasswordDialog';
 import hmrdp from 'libhmrdp.so';
 
@@ -47,20 +47,41 @@ struct Index {
     this.reload();
     // 不在启动时申请文件权限：改为在用户选择共享文件夹/发起带共享会话的场景内申请
     this.applyPortrait();
+    this.watchFoldStatus();
   }
 
-  /** 手机/平板：电脑列表与各管理页固定竖屏（会话页进入时自行切横屏，退出再切回来）。
-   *  PC/2in1 是窗口化形态，不设朝向。 */
+  /** 列表页朝向：手机与折叠屏外屏竖屏；平板与折叠屏内屏（大屏形态）横屏。
+   *  PC/2in1 是窗口化形态，不设朝向。会话页一律横屏，退出时自己按同一判据切回。 */
   private async applyPortrait(): Promise<void> {
     if (isPcDevice()) {
       return;
     }
+    const large = isLargeScreen();
     try {
       const win = await window.getLastWindow(this.ctx());
-      await win.setPreferredOrientation(window.Orientation.PORTRAIT);
+      await win.setPreferredOrientation(large ? window.Orientation.AUTO_ROTATION_LANDSCAPE
+                                             : window.Orientation.PORTRAIT);
+      hilog.info(0x0000, 'Index', '列表页朝向: %{public}s', large ? '横屏(大屏形态)' : '竖屏');
     } catch (e) {
       const err = e as BusinessError;
-      hilog.warn(0x0000, 'Index', '设置竖屏失败: code=%{public}d', err.code);
+      hilog.warn(0x0000, 'Index', '设置朝向失败: code=%{public}d', err.code);
+    }
+  }
+
+  /** 折叠屏展开/合起时重新判定列表页朝向（内屏横、外屏竖） */
+  private watchFoldStatus(): void {
+    try {
+      if (!display.isFoldable()) {
+        return;
+      }
+      display.on('foldStatusChange', (status: display.FoldStatus) => {
+        hilog.info(0x0000, 'Index', '折叠状态变化: %{public}d', status);
+        if (!AppStorage.get<boolean>('hmrdpInSession')) {
+          this.applyPortrait(); // 会话中不动（会话恒横屏），退出后由列表页重设
+        }
+      });
+    } catch (e) {
+      // 非折叠屏或接口不可用，忽略
     }
   }
 

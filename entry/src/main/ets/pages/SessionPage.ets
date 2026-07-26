@@ -7,7 +7,7 @@ import { resolveSharePath, SHARE_TARGETS } from '../model/ShareFolders';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
-import { isPcDevice } from '../model/DeviceKit';
+import { isPcDevice, isLargeScreen } from '../model/DeviceKit';
 import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
   MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
 import { inputConsumer, KeyCode } from '@kit.InputKit';
@@ -210,17 +210,19 @@ export struct SessionPage {
     }
   }
 
-  /** 手机/平板：会话强制横屏（远端桌面是横向的，竖屏看没法用），退出会话回竖屏。
+  /** 会话一律横屏（远端桌面是横向的，竖屏没法用）；退出时按形态还原——
+   *  平板与折叠屏内屏（大屏）继续横屏，手机与折叠屏外屏回竖屏。
    *  PC/2in1 是窗口化形态，朝向无意义也不该动。 */
   private async applyOrientation(landscape: boolean): Promise<void> {
     if (this.isPc) {
       return;
     }
+    // 横屏用 AUTO_ROTATION_LANDSCAPE：左右两个横向都允许，用户怎么拿都行
+    const target = (landscape || isLargeScreen()) ? window.Orientation.AUTO_ROTATION_LANDSCAPE
+                                                  : window.Orientation.PORTRAIT;
     try {
       const win = await window.getLastWindow(this.ctx());
-      // 横屏用 AUTO_ROTATION_LANDSCAPE：左右两个横向都允许，用户怎么拿都行
-      await win.setPreferredOrientation(landscape ? window.Orientation.AUTO_ROTATION_LANDSCAPE
-                                                 : window.Orientation.PORTRAIT);
+      await win.setPreferredOrientation(target);
     } catch (e) {
       const err = e as BusinessError;
       console.warn(`HMRDP 设置屏幕朝向失败: code=${err.code}`);
