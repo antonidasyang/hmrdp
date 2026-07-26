@@ -20,9 +20,9 @@ export interface DesktopHotkey {
   keyCode: number;
 }
 
-/** 默认 Ctrl + Shift + Backspace：远端 Windows 基本不占用这个组合 */
+/** 默认 Ctrl + Alt + Backspace：远端 Windows 基本不占用这个组合 */
 export function defaultDesktopHotkey(): DesktopHotkey {
-  return { enabled: true, mods: MOD_CTRL | MOD_SHIFT, keyCode: KeyCode.KEYCODE_DEL };
+  return { enabled: true, mods: MOD_CTRL | MOD_ALT, keyCode: KeyCode.KEYCODE_DEL };
 }
 
 /** 修饰键本身不能作为触发键 */
@@ -82,7 +82,7 @@ export function keyLabel(code: number): string {
   return named !== undefined ? named.label : `键码 ${code}`;
 }
 
-/** 组合键显示名，如「Ctrl + Shift + Backspace」；未配置返回空串 */
+/** 组合键显示名，如「Ctrl + Alt + Backspace」；未配置返回空串 */
 export function hotkeyLabel(hk: DesktopHotkey): string {
   if (hk.mods === 0 || hk.keyCode === 0) {
     return '';
@@ -108,7 +108,7 @@ export interface HotkeyPreset {
 
 /** 常用组合，供设置页下拉直选（键盘录入不可用时的兜底路径）。都避开了远端 Windows 常用键 */
 export const HOTKEY_PRESETS: HotkeyPreset[] = [
-  { mods: MOD_CTRL | MOD_SHIFT, keyCode: KeyCode.KEYCODE_DEL },
+  { mods: MOD_CTRL | MOD_ALT, keyCode: KeyCode.KEYCODE_DEL },
   { mods: MOD_CTRL | MOD_ALT, keyCode: KeyCode.KEYCODE_Q },
   { mods: MOD_CTRL | MOD_ALT, keyCode: KeyCode.KEYCODE_ENTER },
   { mods: MOD_CTRL | MOD_ALT, keyCode: KeyCode.KEYCODE_MOVE_HOME },

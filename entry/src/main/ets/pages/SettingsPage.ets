@@ -225,7 +225,7 @@ export struct SettingsPage {
                 .fontColor($r('sys.color.font_tertiary'))
                 .alignSelf(ItemAlign.Start)
 
-              Button('恢复默认（Ctrl + Shift + Backspace）')
+              Button('恢复默认（Ctrl + Alt + Backspace）')
                 .buttonStyle(ButtonStyleMode.TEXTUAL)
                 .alignSelf(ItemAlign.Start)
                 .onClick(() => {

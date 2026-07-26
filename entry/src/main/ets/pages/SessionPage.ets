@@ -265,7 +265,7 @@ export struct SessionPage {
     this.armDesktopHotkey(true);
   }
 
-  /** 下发「返回鸿蒙桌面」热键（设置页可配，默认 Ctrl+Shift+Backspace）。命中后原生不转发该键，
+  /** 下发「返回鸿蒙桌面」热键（设置页可配，默认 Ctrl+Alt+Backspace）。命中后原生不转发该键，
    *  回调这里最小化回桌面。连接成功时下发，窗口重新聚焦时重读（改完设置无需重连）。 */
   /** notify=true 时用 toast 报一次结果（连接成功那次）；窗口重新聚焦的重复武装不打扰用户 */
   private armDesktopHotkey(notify: boolean): void {
