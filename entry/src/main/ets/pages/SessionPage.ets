@@ -94,7 +94,8 @@ struct ToolButton {
   @Prop symbol: Resource = $r('sys.symbol.xmark');
   @Prop label: string = '';
   @Prop active: boolean = false;
-  /** 线条太细的符号（如 circle）加粗后在深色工具条上更清晰 */
+  /** 线条太细的符号（如 circle）加粗后在深色工具条上更清晰。
+   *  用数值字重：HMSymbolVF 的 wght 轴到 900，900 即最粗，比 FontWeight.Bold 更实 */
   @Prop bold: boolean = false;
   action: () => void = () => {};
 
@@ -102,7 +103,7 @@ struct ToolButton {
     Column({ space: 2 }) {
       SymbolGlyph(this.symbol)
         .fontSize(22)
-        .fontWeight(this.bold ? FontWeight.Bold : FontWeight.Normal)
+        .fontWeight(this.bold ? 900 : 400)
         .fontColor([this.active ? '#4DA3FF' : Color.White])
       Text(this.label)
         .fontSize(10)
