@@ -34,14 +34,17 @@ export default class EntryAbility extends UIAbility {
     try {
       this.mainWin = windowStage.getMainWindowSync();
       this.mainWin.on('windowWillClose', this.willCloseCb);
+      hilog.info(0x0000, TAG, 'windowWillClose 已注册');
     } catch (e) {
       const err = e as BusinessError;
-      hilog.warn(0x0000, TAG, 'windowWillClose 注册失败: code=%{public}d', err.code);
+      hilog.warn(0x0000, TAG, 'windowWillClose 注册失败: code=%{public}d msg=%{public}s',
+        err.code, err.message);
     }
   }
 
   /** 返回值语义见 @ohos.window：resolve(true) = 不关闭窗口，resolve(false) = 继续关闭 */
   private async confirmClose(): Promise<boolean> {
+    hilog.info(0x0000, TAG, 'windowWillClose 触发');
     let count = 0;
     try {
       count = await this.activeSessionCount();
