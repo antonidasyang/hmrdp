@@ -1,4 +1,4 @@
-import { SymbolGlyphModifier } from '@kit.ArkUI';
+import { SymbolGlyphModifier, window } from '@kit.ArkUI';
 import { common, Want, StartOptions, AbilityConstant, contextConstant } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -46,6 +46,22 @@ struct Index {
     this.coreVersion = hmrdp.getVersion();
     this.reload();
     // 不在启动时申请文件权限：改为在用户选择共享文件夹/发起带共享会话的场景内申请
+    this.applyPortrait();
+  }
+
+  /** 手机/平板：电脑列表与各管理页固定竖屏（会话页进入时自行切横屏，退出再切回来）。
+   *  PC/2in1 是窗口化形态，不设朝向。 */
+  private async applyPortrait(): Promise<void> {
+    if (isPcDevice()) {
+      return;
+    }
+    try {
+      const win = await window.getLastWindow(this.ctx());
+      await win.setPreferredOrientation(window.Orientation.PORTRAIT);
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.warn(0x0000, 'Index', '设置竖屏失败: code=%{public}d', err.code);
+    }
   }
 
   reload(): void {

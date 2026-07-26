@@ -210,6 +210,23 @@ export struct SessionPage {
     }
   }
 
+  /** 手机/平板：会话强制横屏（远端桌面是横向的，竖屏看没法用），退出会话回竖屏。
+   *  PC/2in1 是窗口化形态，朝向无意义也不该动。 */
+  private async applyOrientation(landscape: boolean): Promise<void> {
+    if (this.isPc) {
+      return;
+    }
+    try {
+      const win = await window.getLastWindow(this.ctx());
+      // 横屏用 AUTO_ROTATION_LANDSCAPE：左右两个横向都允许，用户怎么拿都行
+      await win.setPreferredOrientation(landscape ? window.Orientation.AUTO_ROTATION_LANDSCAPE
+                                                 : window.Orientation.PORTRAIT);
+    } catch (e) {
+      const err = e as BusinessError;
+      console.warn(`HMRDP 设置屏幕朝向失败: code=${err.code}`);
+    }
+  }
+
   /** 最小化会话窗口回鸿蒙桌面：RDP 连接保持（surface 销毁只 DetachWindow），从任务栏点回来继续。
    *  PC 全屏会话没有系统标题栏/Dock 悬浮出口（见 SessionAbility.enterImmersive），这是主要退路。
    *  窗口 HIDDEN 时 onWindowEvent 会自动放开键盘拦截，切回来重新抢占。 */
@@ -923,6 +940,7 @@ export struct SessionPage {
       if (!this.params.standalone) {
         AppStorage.setOrCreate('hmrdpInSession', true);
       }
+      this.applyOrientation(true); // 手机/平板：会话横屏
       // 「全屏」分辨率档：进入会话即切沉浸式全屏
       if (this.params.fullscreen) {
         this.applyFullscreen(true);
@@ -934,6 +952,7 @@ export struct SessionPage {
         if (this.fullscreen) {
           this.applyFullscreen(false); // 应用内会话退出时恢复系统栏；独立窗口整体关闭无需恢复
         }
+        this.applyOrientation(false); // 退出会话回竖屏（列表页是竖屏设计）
       }
       this.aliveResponder.stop();
       this.teardownClipboard();
