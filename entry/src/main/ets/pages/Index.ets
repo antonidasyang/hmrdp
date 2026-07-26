@@ -407,28 +407,28 @@ struct Index {
     .hideBackButton(true)
     .menus([
       {
-        value: 'add',
+        value: '添加电脑',
         symbolIcon: new SymbolGlyphModifier($r('sys.symbol.plus')),
         action: () => {
           this.pathStack.pushPathByName('edit', new EditPCParams(''));
         }
       },
       {
-        value: 'accounts',
+        value: '账号',
         symbolIcon: new SymbolGlyphModifier($r('sys.symbol.person_2')),
         action: () => {
           this.pathStack.pushPathByName('accounts', null);
         }
       },
       {
-        value: 'settings',
+        value: '设置',
         symbolIcon: new SymbolGlyphModifier($r('sys.symbol.gearshape')),
         action: () => {
           this.pathStack.pushPathByName('settings', null);
         }
       },
       {
-        value: 'about',
+        value: '关于',
         symbolIcon: new SymbolGlyphModifier($r('sys.symbol.info_circle')),
         action: () => {
           this.pathStack.pushPathByName('about', null);
