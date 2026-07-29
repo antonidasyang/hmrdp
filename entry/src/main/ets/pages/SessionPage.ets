@@ -137,6 +137,10 @@ export struct SessionPage {
   private baseOffsetY: number = 0;
   private viewW: number = 0;
   private viewH: number = 0;
+  // 滚轮：不足一档的余量（单位＝档），以及首个事件学到的“一档轴值”
+  private wheelAccum: number = 0;
+  private wheelUnit: number = 0;
+  private wheelLogged: number = 0;
   private pathStack: NavPathStack | null = null;
   private params: SessionParams = new SessionParams();
   private closing: boolean = false;
@@ -874,14 +878,36 @@ export struct SessionPage {
             )
           )
           .onAxisEvent((event: AxisEvent) => {
-            // 竖向滚动轴值，带方向（鼠标滚轮与触摸板双指滚动均覆盖）。scrollStep 仅鼠标滚轮
-            // 携带、触摸板上恒正，会导致单向滚动，故改用 getVerticalAxisValue()。
-            // 60 = 半档（WHEEL_DELTA=120 的一半），触摸板滚动偏快，降速一半。方向若相反把 -v 改成 v。
+            // 竖向滚动轴值，带方向（鼠标滚轮与触摸板双指滚动均覆盖）。scrollStep 恒正、
+            // 不带方向，只能当步长用，不能当位移用。方向若相反把两处的负号去掉。
+            if (event.action === AxisAction.END || event.action === AxisAction.CANCEL) {
+              this.wheelAccum = 0;
+              return;
+            }
             const v = event.getVerticalAxisValue();
-            if (v !== 0) {
-              const delta = Math.trunc(-v * 60);
-              // 保底 ±1：轻微滑动经截断后不至于变 0 而丢滚动
-              hmrdp.sendWheel(delta !== 0 ? delta : (v > 0 ? -1 : 1), event.x, event.y);
+            if (v === 0) {
+              return;
+            }
+            if (this.wheelLogged < 5) {
+              this.wheelLogged++;
+              console.info(`HMRDP wheel tool=${event.sourceTool} action=${event.action} v=${v} step=${event.scrollStep}`);
+            }
+            if (event.sourceTool === SourceTool.MOUSE) {
+              // 鼠标滚轮：系统对每个物理档位恰好上报一次轴事件，所以一次事件就发一档
+              // WHEEL_DELTA(120)，与宿主机滚一格滚同样行数，1:1 不放大。
+              this.wheelUnit = Math.abs(v); // 记下一档的轴值量纲，供触摸板折算
+              this.wheelAccum = 0;
+              hmrdp.sendWheel(v > 0 ? -120 : 120, event.x, event.y);
+              return;
+            }
+            // 触摸板双指滚动是连续量，按“一档轴值”折算成档数，凑满整档才下发，
+            // 余量留到下次，既不会因截断丢滚动，也不会每帧都甩出一整档。
+            const unit = this.wheelUnit > 0 ? this.wheelUnit : Math.max(1, event.scrollStep ?? 1);
+            this.wheelAccum += -v / unit;
+            const notches = Math.trunc(this.wheelAccum);
+            if (notches !== 0) {
+              this.wheelAccum -= notches;
+              hmrdp.sendWheel(notches * 120, event.x, event.y);
             }
           })
 
