@@ -13,8 +13,15 @@ export default class SessionAbility extends UIAbility {
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    // multiton 下一般不会复用实例；保留以防同实例被再次拉起时刷新参数（sessionEpoch 触发重连）
-    this.applyWant(want);
+    // specified 模式：再次双击同一台电脑会路由到本实例并由系统唤到前台。
+    // 目标还是同一台电脑时什么都不做——已连接的会话必须保持，不能 bump epoch 触发重连。
+    const cur = this.storage.get<SessionParams>('sessionParams');
+    const p = want.parameters;
+    if (cur !== undefined && p !== undefined
+      && cur.host === (p['host'] as string) && cur.port === (p['port'] as number)) {
+      return;
+    }
+    this.applyWant(want); // 防御：key 含 host:port，正常不会带着另一台电脑的参数进来
   }
 
   private applyWant(want: Want): void {

@@ -2,6 +2,7 @@
   "module": {
     "name": "entry",
     "type": "entry",
+    "srcEntry": "./ets/stage/AppStage.ets",
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
     "deviceTypes": [
@@ -80,9 +81,15 @@
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": false,
-        "launchType": "multiton",
+        // specified：按 AppStage.onAcceptWant 返回的 key(host:port) 路由——同一台电脑
+        // 已有会话窗口时不再新建，直接唤到前台。isolationProcess：每个 key 一个独立
+        // 进程（native 全局会话互不干扰），进程名由 onNewProcessRequest 决定，仅 2in1 生效。
+        "launchType": "specified",
+        "isolationProcess": true,
+        // floating 必须允许：跨显示器移动要先 recover 回浮动态再 move+maximize
         "supportWindowMode": [
-          "fullscreen"
+          "fullscreen",
+          "floating"
         ]
       }
     ]

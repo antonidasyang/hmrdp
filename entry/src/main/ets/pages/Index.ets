@@ -1,5 +1,5 @@
 import { SymbolGlyphModifier, window, display } from '@kit.ArkUI';
-import { common, Want, StartOptions, AbilityConstant, contextConstant } from '@kit.AbilityKit';
+import { common, Want, StartOptions, AbilityConstant } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { EditPCPage, EditPCParams } from './EditPCPage';
@@ -135,13 +135,11 @@ struct Index {
         shareDir: params.shareDir ? JSON.stringify(params.shareDir) : ''
       }
     };
-    // 全屏窗口 + 独立新进程：每个会话开进自己的进程，native 全局会话（g_session/键盘拦截等）
-    // 互不干扰，从而支持同时连多台电脑。NEW_PROCESS_ATTACH_TO_PARENT 生命周期随主进程。
-    // processMode 与 startupVisibility 必须同时设置。
+    // 全屏窗口。进程与实例管理走 SessionAbility 的 specified+isolationProcess（见 AppStage）：
+    // 每台电脑一个会话窗口+独立进程；再次连接同一台电脑时系统直接把已有窗口唤到前台，
+    // 不再新建（此前 multiton+processMode 每次双击都开新窗口）。
     const options: StartOptions = {
-      windowMode: AbilityConstant.WindowMode.WINDOW_MODE_FULLSCREEN,
-      processMode: contextConstant.ProcessMode.NEW_PROCESS_ATTACH_TO_PARENT,
-      startupVisibility: contextConstant.StartupVisibility.STARTUP_SHOW
+      windowMode: AbilityConstant.WindowMode.WINDOW_MODE_FULLSCREEN
     };
     ctx.startAbility(want, options).catch((e: Object) => {
       // 启动独立窗口失败则回退到应用内会话
