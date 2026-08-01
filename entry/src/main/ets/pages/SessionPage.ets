@@ -128,6 +128,12 @@ export struct SessionPage {
   @State trackpadMode: boolean = false;
   @State isPc: boolean = false;
   @State fullscreen: boolean = false;
+  // 多显示器（PC 外接屏/投屏）：>1 块屏时工具条出现「屏幕」菜单，可把会话窗口搬过去
+  @State displays: display.Display[] = [];
+  @State curDisplayId: number = -1;
+  private displayChangeCb: (id: number) => void = (_id: number) => {
+    this.refreshDisplays();
+  };
   // 视图缩放/平移（作用于 XComponent 显示，不改变远端分辨率）
   @State viewScale: number = 1;
   @State offsetX: number = 0;
@@ -190,6 +196,73 @@ export struct SessionPage {
     this.isPc = isPcDevice();
     if (this.isPc) {
       hmrdp.setTouchEnabled(false); // PC 有物理键鼠，关掉 TouchMapper 避免和鼠标回调产生双击
+      this.refreshDisplays();
+      try {
+        display.on('add', this.displayChangeCb); // 外接屏插拔时刷新「屏幕」菜单
+        display.on('remove', this.displayChangeCb);
+      } catch (e) {
+        // 接口不可用时降级：菜单只按启动时的显示器列表
+      }
+    }
+  }
+
+  // ---- 多显示器：会话窗口放到哪块屏（外接显示器/投屏场景）----
+
+  private refreshDisplays(): void {
+    display.getAllDisplays().then((list: display.Display[]) => {
+      this.displays = list;
+    }).catch((e: BusinessError) => {
+      console.warn(`HMRDP 查询显示器列表失败: code=${e.code}`);
+    });
+    window.getLastWindow(this.ctx()).then((win: window.Window) => {
+      const id = win.getWindowProperties().displayId;
+      this.curDisplayId = id !== undefined ? id : -1;
+    }).catch(() => {
+    });
+  }
+
+  private displayMenu(): MenuElement[] {
+    const items: MenuElement[] = [];
+    for (const d of this.displays) {
+      const name = d.name !== undefined && d.name.length > 0 ? d.name : `显示器 ${d.id}`;
+      const label = `${name}（${d.width}×${d.height}）`;
+      items.push({
+        value: d.id === this.curDisplayId ? `${label} · 当前` : label,
+        action: () => {
+          this.moveToDisplay(d.id, name);
+        }
+      });
+    }
+    return items;
+  }
+
+  /** 把会话全屏窗口搬到指定显示器。maximize 态的窗口不能直接移动（1300010：仅浮动态可移），
+   *  所以先 recover 回浮动态 → moveWindowToGlobal 落到目标屏 → 再 maximize 回沉浸全屏。
+   *  移动后 surface 尺寸变化会经动态分辨率（disp 通道）自动匹配新屏幕。 */
+  private async moveToDisplay(displayId: number, name: string): Promise<void> {
+    try {
+      const win = await window.getLastWindow(this.ctx());
+      if (win.getWindowProperties().displayId === displayId) {
+        return; // 已在目标屏
+      }
+      try {
+        await win.recover(); // 已是浮动态或形态不支持时继续尝试移动
+      } catch (e) {
+      }
+      const conf: window.MoveConfiguration = { displayId: displayId };
+      await win.moveWindowToGlobal(0, 0, conf);
+      try {
+        await win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER);
+      } catch (e) {
+        win.maximize().catch(() => {
+        }); // 不支持沉浸入参的设备退回普通最大化
+      }
+      this.curDisplayId = displayId;
+      promptAction.showToast({ message: `已移至${name}` });
+    } catch (e) {
+      const err = e as BusinessError;
+      console.warn(`HMRDP 移动到显示器失败: code=${err.code} msg=${err.message}`);
+      promptAction.showToast({ message: '移动窗口失败，请重试' });
     }
   }
 
@@ -425,6 +498,7 @@ export struct SessionPage {
     } else if (type === window.WindowEventType.WINDOW_ACTIVE && this.connected) {
       this.keyIntercepting = hmrdp.setKeyInterception(true);
       this.armDesktopHotkey(false); // 顺带重读设置：改完热键切回会话窗口即生效，不必重连
+      this.refreshDisplays(); // 顺带刷新窗口当前所在屏，「屏幕」菜单的「当前」标注才准
     }
   }
 
@@ -798,6 +872,19 @@ export struct SessionPage {
           }
           .padding({ left: 10, right: 10, top: 6, bottom: 6 })
           .bindMenu(this.systemKeysMenu())
+          // 多显示器（外接屏/投屏）：选择把会话窗口放到哪块屏上
+          if (this.isPc && this.displays.length > 1) {
+            Column({ space: 2 }) {
+              SymbolGlyph($r('sys.symbol.display'))
+                .fontSize(22)
+                .fontColor([Color.White])
+              Text('屏幕')
+                .fontSize(10)
+                .fontColor(Color.White)
+            }
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .bindMenu(this.displayMenu())
+          }
           // 全屏切换：仅手机/平板；PC 会话窗口由 SessionAbility 统一全屏管理
           if (!this.isPc) {
             ToolButton({
@@ -981,6 +1068,13 @@ export struct SessionPage {
           this.applyFullscreen(false); // 应用内会话退出时恢复系统栏；独立窗口整体关闭无需恢复
         }
         this.applyOrientation(false); // 退出会话回竖屏（列表页是竖屏设计）
+      }
+      if (this.isPc) {
+        try {
+          display.off('add', this.displayChangeCb);
+          display.off('remove', this.displayChangeCb);
+        } catch (e) {
+        }
       }
       this.aliveResponder.stop();
       this.teardownClipboard();
