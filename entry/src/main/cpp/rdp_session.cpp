@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <ctime>
 #include <vector>
 
 #include "hm_log.h"
@@ -33,6 +34,14 @@
 namespace hmrdp {
 
 namespace {
+
+// 单调时钟毫秒（resize 去抖 / present 频率诊断用，不受系统时间调整影响）
+uint64_t NowMs()
+{
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000u + static_cast<uint64_t>(ts.tv_nsec) / 1000000u;
+}
 
 // freerdp 上下文扩展：内嵌 rdpClientContext 以复用 FreeRDP 客户端通道 helper
 struct HmContext {
@@ -551,7 +560,10 @@ void RdpSession::ThreadMain()
         handles[count++] = stopEvent_;
         handles[count++] = inputSignal_;
 
-        const DWORD status = WaitForMultipleObjects(count, handles, FALSE, INFINITE);
+        // 有待下发的 resize 时用短超时轮询：去抖窗口期结束后即使远端无数据也能把
+        // 待定尺寸发出去（否则要等下一个网络事件才会醒）
+        const DWORD waitMs = resizePending_.load() ? 50 : INFINITE;
+        const DWORD status = WaitForMultipleObjects(count, handles, FALSE, waitMs);
         if (status == WAIT_FAILED)
             break;
         if (WaitForSingleObject(stopEvent_, 0) == WAIT_OBJECT_0)
@@ -585,10 +597,14 @@ void RdpSession::NotifyState(SessionState state, const char* message)
 void RdpSession::AttachWindow(OHNativeWindow* window, uint64_t width, uint64_t height)
 {
     std::lock_guard<std::mutex> lock(windowMutex_);
+    // buffer 几何 = 远端桌面尺寸，与 surface 尺寸无关；只有换了 surface 才需要重设
+    // 几何/格式。此前每次 surfaceChanged 都置脏 → 外接显示器高频上报时每帧都
+    // SET_BUFFER_GEOMETRY，缓冲队列反复重配，表现为画面闪烁。
+    if (window_ != window)
+        geometryDirty_ = true;
     window_ = window;
     surfaceWidth_ = width;
     surfaceHeight_ = height;
-    geometryDirty_ = true;
 }
 
 void RdpSession::DetachWindow()
@@ -617,8 +633,12 @@ void RdpSession::RequestResize(uint32_t w, uint32_t h)
         w = DISPLAY_CONTROL_MAX_MONITOR_WIDTH;
     if (h > DISPLAY_CONTROL_MAX_MONITOR_HEIGHT)
         h = DISPLAY_CONTROL_MAX_MONITOR_HEIGHT;
+    // 同尺寸重复请求直接忽略（外接显示器下系统可能风暴式上报 surfaceChanged）
+    if (resizePending_.load() && pendingW_.load() == w && pendingH_.load() == h)
+        return;
     pendingW_.store(w);
     pendingH_.store(h);
+    resizeRequestMs_.store(NowMs()); // 去抖起点：尺寸稳定一段时间后才真正下发
     resizePending_.store(true);
     if (inputSignal_)
         SetEvent(inputSignal_); // 唤醒事件循环，在 RDP 线程内下发
@@ -633,10 +653,16 @@ void RdpSession::OnDispConnected(DispClientContext* disp)
 
 void RdpSession::SendResizeIfPending()
 {
-    if (!resizePending_.exchange(false))
+    if (!resizePending_.load())
         return;
+    // 通道未就绪时保留 pending（OnDispConnected 就绪后补发），不能先消费标志再返回
     if (!disp_ || !disp_->SendMonitorLayout)
         return;
+    // 去抖：窗口动画/显示器插拔期间尺寸连续变化，等稳定 200ms 再下发，
+    // 避免高频 SendMonitorLayout 让远端桌面反复重排（表现为整屏闪烁）
+    if (NowMs() - resizeRequestMs_.load() < 200)
+        return;
+    resizePending_.store(false);
     const uint32_t w = pendingW_.load();
     const uint32_t h = pendingH_.load();
     if (w < DISPLAY_CONTROL_MIN_MONITOR_WIDTH || h < DISPLAY_CONTROL_MIN_MONITOR_HEIGHT)
@@ -922,22 +948,10 @@ void RdpSession::SendUnicode(uint16_t utf16Unit)
 
 void RdpSession::MarkDirty(int32_t x, int32_t y, int32_t w, int32_t h)
 {
+    // 提交时整帧拷贝+整帧 damage（见 PresentFrame），这里只需标记“本轮有更新”
     if (w <= 0 || h <= 0)
         return;
-    const int32_t x1 = x + w;
-    const int32_t y1 = y + h;
-    if (!presentPending_) {
-        dirtyX0_ = x;
-        dirtyY0_ = y;
-        dirtyX1_ = x1;
-        dirtyY1_ = y1;
-        presentPending_ = true;
-    } else {
-        dirtyX0_ = std::min(dirtyX0_, x);
-        dirtyY0_ = std::min(dirtyY0_, y);
-        dirtyX1_ = std::max(dirtyX1_, x1);
-        dirtyY1_ = std::max(dirtyY1_, y1);
-    }
+    presentPending_ = true;
 }
 
 void RdpSession::PresentIfDirty()
@@ -1011,28 +1025,28 @@ bool RdpSession::PresentFrame()
 
     munmap(mapped, handle->size);
 
-    // damage 区域：脏区包围盒与桌面尺寸求交
-    const int32_t dx = std::max(0, dirtyX0_);
-    const int32_t dy = std::max(0, dirtyY0_);
-    const int32_t dw = std::min(width, dirtyX1_) - dx;
-    const int32_t dh = std::min(height, dirtyY1_) - dy;
-
+    // damage 一律整缓冲（rects=null）：缓冲内容本就是整帧拷贝，部分刷新提示只是
+    // 合成器优化；外接显示器/镜像合成路径对部分 damage 的处理不可靠（表现为闪烁、
+    // 残影交替），整帧提交把这一类合成器差异全部排除。
     Region region = {};
-    Region::Rect rect;
-    if (dw > 0 && dh > 0) {
-        rect.x = dx;
-        rect.y = dy;
-        rect.w = static_cast<uint32_t>(dw);
-        rect.h = static_cast<uint32_t>(dh);
-        region.rects = &rect;
-        region.rectNumber = 1;
-    } else {
-        region.rects = nullptr;
-        region.rectNumber = 0;
-    }
+    region.rects = nullptr;
+    region.rectNumber = 0;
     if (OH_NativeWindow_NativeWindowFlushBuffer(window_, buffer, -1, region) != 0) {
         HMLOGW("FlushBuffer 失败");
         return false;
+    }
+
+    // 提交频率诊断：每 5 秒一行。若外接屏下这里帧数异常高（如 >100/5s 且画面在闪），
+    // 说明有事件风暴在驱动重绘，日志可直接定位来源。
+    presentCount_++;
+    const uint64_t now = NowMs();
+    if (presentLogMs_ == 0)
+        presentLogMs_ = now;
+    if (now - presentLogMs_ >= 5000) {
+        HMLOGI("present %{public}u 帧 / %{public}llu ms，桌面 %{public}dx%{public}d",
+               presentCount_, static_cast<unsigned long long>(now - presentLogMs_), width, height);
+        presentCount_ = 0;
+        presentLogMs_ = now;
     }
     return true;
 }

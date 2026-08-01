@@ -180,6 +180,7 @@ private:
     std::atomic<uint32_t> pendingW_{ 0 };
     std::atomic<uint32_t> pendingH_{ 0 };
     std::atomic<bool> resizePending_{ false };
+    std::atomic<uint64_t> resizeRequestMs_{ 0 }; // 最近一次请求时刻，尺寸稳定后才下发
     uint32_t layoutScale_ = 100;
 
     // cliprdr 剪贴板（cliprdr_ 仅 RDP 线程访问）
@@ -195,12 +196,10 @@ private:
     ClipImageCallback clipImageCb_ = nullptr;
     void* clipImageCbUserData_ = nullptr;
 
-    // 脏区累积（仅 RDP 线程访问）
+    // 帧提交（仅 RDP 线程访问）
     bool presentPending_ = false;
-    int32_t dirtyX0_ = 0;
-    int32_t dirtyY0_ = 0;
-    int32_t dirtyX1_ = 0;
-    int32_t dirtyY1_ = 0;
+    uint32_t presentCount_ = 0;  // 提交频率诊断计数
+    uint64_t presentLogMs_ = 0;
 
     std::mutex inputMutex_;
     std::deque<InputEvent> inputQueue_;

@@ -284,11 +284,20 @@ void OnSurfaceChanged(OH_NativeXComponent* component, void* window)
     uint64_t w = 0;
     uint64_t h = 0;
     OH_NativeXComponent_GetXComponentSize(component, window, &w, &h);
+    auto* nativeWindow = static_cast<OHNativeWindow*>(window);
     std::lock_guard<std::mutex> lock(g_mutex);
+    // 外接显示器在位时系统可能高频重复上报同尺寸的 surfaceChanged；
+    // 窗口与尺寸都没变就直接忽略，避免反复 Attach/Resize 造成画面闪烁。
+    if (nativeWindow == g_window && w == g_surfaceW && h == g_surfaceH)
+        return;
+    HMLOGI("surface changed %{public}llu x %{public}llu (旧 %{public}llu x %{public}llu)",
+           (unsigned long long)w, (unsigned long long)h,
+           (unsigned long long)g_surfaceW, (unsigned long long)g_surfaceH);
+    g_window = nativeWindow;
     g_surfaceW = w;
     g_surfaceH = h;
     if (g_session) {
-        g_session->AttachWindow(static_cast<OHNativeWindow*>(window), w, h);
+        g_session->AttachWindow(nativeWindow, w, h);
         if (g_session->IsDynamicResolution())
             g_session->RequestResize(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
     }
