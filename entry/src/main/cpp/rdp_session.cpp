@@ -78,10 +78,9 @@ BOOL HmDesktopResize(rdpContext* context)
     rdpSettings* settings = context->settings;
     const UINT32 w = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
     const UINT32 h = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
-    if (!gdi_resize(context->gdi, w, h))
-        return FALSE;
-    SessionOf(context)->OnDesktopResize(w, h);
-    return TRUE;
+    // 注意：GFX 开启时本回调经 gdi_ResetGraphics 在 drdynvc 线程触发（drdynvc 默认
+    // async），并非 RDP 主线程；gdi_resize 必须与 PresentFrame 互斥，见 ResizeGdi。
+    return SessionOf(context)->ResizeGdi(w, h) ? TRUE : FALSE;
 }
 
 // ---- 剪贴板：UTF-8 <-> CF_UNICODETEXT(UTF-16LE) + PNG 图片 ----
@@ -621,6 +620,21 @@ void RdpSession::OnDesktopResize(uint32_t w, uint32_t h)
     geometryDirty_ = true;
 }
 
+bool RdpSession::ResizeGdi(uint32_t w, uint32_t h)
+{
+    // gdi_resize 会释放并重建 primary_buffer（12MB 级大块，free 即归还内核）。
+    // GFX 下本函数在 drdynvc 线程被调，而 RDP 主线程可能正在 PresentFrame 里整帧
+    // memcpy 该缓冲——不互斥就是读已释放内存，表现为动态分辨率切换（手机点「全屏」、
+    // 拖拽窗口、插拔显示器）时闪退。用 windowMutex_ 与 present 串行化。
+    std::lock_guard<std::mutex> lock(windowMutex_);
+    if (!gdi_resize(context_->gdi, w, h))
+        return false;
+    desktopWidth_.store(w);
+    desktopHeight_.store(h);
+    geometryDirty_ = true;
+    return true;
+}
+
 // ---- 动态分辨率（disp 显示控制）----
 
 void RdpSession::RequestResize(uint32_t w, uint32_t h)
@@ -948,27 +962,30 @@ void RdpSession::SendUnicode(uint16_t utf16Unit)
 
 void RdpSession::MarkDirty(int32_t x, int32_t y, int32_t w, int32_t h)
 {
-    // 提交时整帧拷贝+整帧 damage（见 PresentFrame），这里只需标记“本轮有更新”
+    // 提交时整帧拷贝+整帧 damage（见 PresentFrame），这里只需标记“本轮有更新”。
+    // GFX 下 EndPaint 在 drdynvc 线程触发，标志必须是原子的。
     if (w <= 0 || h <= 0)
         return;
-    presentPending_ = true;
+    presentPending_.store(true);
 }
 
 void RdpSession::PresentIfDirty()
 {
-    if (!presentPending_)
+    // 先消费标志再提交：拷贝期间到达的新帧会重新置位，下一轮补提交不丢帧
+    if (!presentPending_.exchange(false))
         return;
     PresentFrame();
-    presentPending_ = false;
 }
 
 bool RdpSession::PresentFrame()
 {
+    std::lock_guard<std::mutex> lock(windowMutex_);
+    // gdi 字段与 primary_buffer 的读取必须在锁内：ResizeGdi（drdynvc 线程）持同一把锁
+    // 换缓冲，锁外读到的指针可能已释放
     rdpGdi* gdi = context_->gdi;
     if (!gdi || !gdi->primary_buffer)
         return false;
 
-    std::lock_guard<std::mutex> lock(windowMutex_);
     if (!window_)
         return true; // surface 未就绪时静默丢帧
 

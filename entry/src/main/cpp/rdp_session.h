@@ -112,10 +112,15 @@ public:
     // disp 显示控制通道就绪/断开（RDP 线程，通道连接事件）
     void OnDispConnected(DispClientContext* disp);
 
-    // ---- 以下供 freerdp C 回调使用（均在 RDP 线程）----
-    void MarkDirty(int32_t x, int32_t y, int32_t w, int32_t h); // EndPaint 累积脏区
+    // ---- 以下供 freerdp C 回调使用。注意线程：GFX 开启时 drdynvc 默认异步，
+    // EndPaint（MarkDirty）与 DesktopResize（ResizeGdi）在 drdynvc 线程触发，
+    // 并非 RDP 主线程 ----
+    void MarkDirty(int32_t x, int32_t y, int32_t w, int32_t h); // EndPaint 标记有新帧
     void PresentIfDirty();                                       // 每轮事件后合并提交一次
     void OnDesktopResize(uint32_t w, uint32_t h);
+    // DesktopResize 回调：gdi_resize（释放重建 primary_buffer）与 PresentFrame 的
+    // 整帧拷贝互斥，否则动态分辨率切换时读已释放内存闪退
+    bool ResizeGdi(uint32_t w, uint32_t h);
     void NotifyState(SessionState state, const char* message);
     // RDP 线程调用：通知 UI 并阻塞等待决策（0 拒绝 / 1 永久接受 / 2 本次接受）
     uint32_t RequestCertDecision(const CertInfo& info);
@@ -196,8 +201,9 @@ private:
     ClipImageCallback clipImageCb_ = nullptr;
     void* clipImageCbUserData_ = nullptr;
 
-    // 帧提交（仅 RDP 线程访问）
-    bool presentPending_ = false;
+    // 帧提交。presentPending_ 由 drdynvc 线程（GFX EndPaint）置位、RDP 线程消费；
+    // 计数仅 RDP 线程访问
+    std::atomic<bool> presentPending_{ false };
     uint32_t presentCount_ = 0;  // 提交频率诊断计数
     uint64_t presentLogMs_ = 0;
 
