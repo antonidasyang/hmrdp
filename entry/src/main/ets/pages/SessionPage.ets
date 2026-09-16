@@ -118,6 +118,20 @@ struct ToolButton {
   }
 }
 
+/** XComponent 的手势按状态动态绑定（gestureModifier）。键盘上推用的单指竖向 Pan 只在
+ *  「键盘弹出 + 直接触摸模式」时才绑上去：它一直绑着的话，即便回调什么都不做，ArkUI 一识别到
+ *  竖向拖动就会打乱原生 XComponent 的触摸事件投递——触控板模式指针上下走一跳一跳、横向却
+ *  平滑，就是这么来的。一级属性变化会让 applyGesture 重跑（宿主用 @State 持有本对象）。 */
+class SessionGestures implements GestureModifier {
+  singlePan: boolean = false;
+  build: (event: UIGestureEvent, singlePan: boolean) => void = () => {};
+
+  applyGesture(event: UIGestureEvent): void {
+    event.clearGestures();
+    this.build(event, this.singlePan);
+  }
+}
+
 @Component
 export struct SessionPage {
   @State statusText: string = '正在连接…';
@@ -153,6 +167,7 @@ export struct SessionPage {
   private kbHeightCb: (h: number) => void = (h: number) => {
     this.onKeyboardHeight(h);
   };
+  @State gestures: SessionGestures = new SessionGestures();
   private viewW: number = 0;
   private viewH: number = 0;
   // 滚轮：不足一档的余量（单位＝档），以及首个事件学到的“一档轴值”
@@ -206,6 +221,9 @@ export struct SessionPage {
 
   aboutToAppear(): void {
     this.isPc = isPcDevice();
+    this.gestures.build = (event: UIGestureEvent, singlePan: boolean) => {
+      this.buildGestures(event, singlePan);
+    };
     if (this.isPc) {
       hmrdp.setTouchEnabled(false); // PC 有物理键鼠，关掉 TouchMapper 避免和鼠标回调产生双击
       this.refreshDisplays();
@@ -707,6 +725,7 @@ export struct SessionPage {
     const vp = px > 0 ? this.getUIContext().px2vp(px) : 0;
     console.info(`HMRDP keyboard height px=${px} vp=${vp}`);
     this.kbHeight = vp;
+    this.syncGestures();
     if (vp <= 0) {
       // 键盘收起（含输入法自己的收起按钮）：画面归位、状态同步
       this.kbShift = 0;
@@ -714,6 +733,14 @@ export struct SessionPage {
     } else {
       this.keyboardShown = true;
       this.kbShift = Math.min(this.kbShift, vp);
+    }
+  }
+
+  /** 单指竖向上推手势只在需要时才绑定（见 SessionGestures） */
+  private syncGestures(): void {
+    const want = this.kbHeight > 0 && !this.trackpadMode && !this.isPc;
+    if (this.gestures.singlePan !== want) {
+      this.gestures.singlePan = want;
     }
   }
 
@@ -909,6 +936,85 @@ export struct SessionPage {
     }
   }
 
+  /** 缩放/平移/键盘上推手势，全部并行识别；由 SessionGestures.applyGesture 调用 */
+  private buildGestures(event: UIGestureEvent, singlePan: boolean): void {
+    const pinch = new PinchGestureHandler({ fingers: 2 })
+      .onActionStart(() => {
+        hmrdp.setGestureActive(true);
+        this.baseScale = this.viewScale;
+        this.baseOffsetX = this.offsetX;
+        this.baseOffsetY = this.offsetY;
+      })
+      .onActionUpdate((e: GestureEvent) => {
+        this.viewScale = Math.min(4, Math.max(1, this.baseScale * e.scale));
+        this.clampOffsets();
+      })
+      .onActionEnd(() => {
+        if (this.viewScale <= 1.01) {
+          this.resetZoom();
+        }
+        hmrdp.setGestureActive(false);
+      })
+      .onActionCancel(() => {
+        hmrdp.setGestureActive(false);
+      });
+    // 双指拖动：缩放后平移画面；触控板模式且键盘弹出时上推画面。
+    // 两者都不成立时不接管触摸（否则原生的双指滚轮会被这里吃掉）
+    const pan2 = new PanGestureHandler({ fingers: 2 })
+      .onActionStart((e: GestureEvent) => {
+        if (this.kbPanStart(2, e)) {
+          return;
+        }
+        if (this.viewScale > 1) {
+          hmrdp.setGestureActive(true);
+          this.baseOffsetX = this.offsetX;
+          this.baseOffsetY = this.offsetY;
+        }
+      })
+      .onActionUpdate((e: GestureEvent) => {
+        if (this.kbPanFingers === 2) {
+          this.kbPanUpdate(2, e.offsetY as number);
+        } else if (this.viewScale > 1) {
+          this.offsetX = this.baseOffsetX + (e.offsetX as number);
+          this.offsetY = this.baseOffsetY + (e.offsetY as number);
+          this.clampOffsets();
+        }
+      })
+      .onActionEnd(() => {
+        if (this.kbPanFingers === 2) {
+          this.kbPanEnd(2);
+        } else if (this.viewScale > 1) {
+          hmrdp.setGestureActive(false);
+        }
+      })
+      .onActionCancel(() => {
+        if (this.kbPanFingers === 2) {
+          this.kbPanEnd(2);
+        } else if (this.viewScale > 1) {
+          hmrdp.setGestureActive(false);
+        }
+      });
+    const list: GestureHandler<PanGestureHandler | PinchGestureHandler>[] = [pinch, pan2];
+    if (singlePan) {
+      // 单指竖向拖动上推画面（仅直接触摸 + 键盘弹出时才绑定）。识别距离压到 4vp，
+      // 赶在原生把它判成左键拖拽（14px）之前接管；万一没赶上，原生侧 Cancel 会补抬起
+      list.push(new PanGestureHandler({ fingers: 1, direction: PanDirection.Vertical, distance: 4 })
+        .onActionStart((e: GestureEvent) => {
+          this.kbPanStart(1, e);
+        })
+        .onActionUpdate((e: GestureEvent) => {
+          this.kbPanUpdate(1, e.offsetY as number);
+        })
+        .onActionEnd(() => {
+          this.kbPanEnd(1);
+        })
+        .onActionCancel(() => {
+          this.kbPanEnd(1);
+        }));
+    }
+    event.addGesture(new GestureGroupHandler({ mode: GestureMode.Parallel, gestures: list }));
+  }
+
   @Builder
   sessionToolbar() {
     Row() {
@@ -937,6 +1043,7 @@ export struct SessionPage {
               action: () => {
                 this.trackpadMode = !this.trackpadMode;
                 hmrdp.setTouchMode(this.trackpadMode);
+                this.syncGestures();
                 this.resetZoom();
                 promptAction.showToast({ message: this.trackpadMode ? '触控板模式' : '直接触摸模式' });
               } })
@@ -1008,78 +1115,7 @@ export struct SessionPage {
           .onLoad(() => {
             this.startConnect();
           })
-          .gesture(
-            GestureGroup(GestureMode.Parallel,
-              PinchGesture({ fingers: 2 })
-                .onActionStart(() => {
-                  hmrdp.setGestureActive(true);
-                  this.baseScale = this.viewScale;
-                  this.baseOffsetX = this.offsetX;
-                  this.baseOffsetY = this.offsetY;
-                })
-                .onActionUpdate((event: GestureEvent) => {
-                  this.viewScale = Math.min(4, Math.max(1, this.baseScale * event.scale));
-                  this.clampOffsets();
-                })
-                .onActionEnd(() => {
-                  if (this.viewScale <= 1.01) {
-                    this.resetZoom();
-                  }
-                  hmrdp.setGestureActive(false);
-                }),
-              // 双指拖动：缩放后平移画面；触控板模式且键盘弹出时上推画面。
-              // 两者都不成立时不接管触摸（否则原生的双指滚轮会被这里吃掉）
-              PanGesture({ fingers: 2 })
-                .onActionStart((event: GestureEvent) => {
-                  if (this.kbPanStart(2, event)) {
-                    return;
-                  }
-                  if (this.viewScale > 1) {
-                    hmrdp.setGestureActive(true);
-                    this.baseOffsetX = this.offsetX;
-                    this.baseOffsetY = this.offsetY;
-                  }
-                })
-                .onActionUpdate((event: GestureEvent) => {
-                  if (this.kbPanFingers === 2) {
-                    this.kbPanUpdate(2, event.offsetY as number);
-                  } else if (this.viewScale > 1) {
-                    this.offsetX = this.baseOffsetX + (event.offsetX as number);
-                    this.offsetY = this.baseOffsetY + (event.offsetY as number);
-                    this.clampOffsets();
-                  }
-                })
-                .onActionEnd(() => {
-                  if (this.kbPanFingers === 2) {
-                    this.kbPanEnd(2);
-                  } else if (this.viewScale > 1) {
-                    hmrdp.setGestureActive(false);
-                  }
-                })
-                .onActionCancel(() => {
-                  if (this.kbPanFingers === 2) {
-                    this.kbPanEnd(2);
-                  } else if (this.viewScale > 1) {
-                    hmrdp.setGestureActive(false);
-                  }
-                }),
-              // 单指竖向拖动：仅直接触摸模式 + 键盘弹出时上推画面。识别距离压到 4vp，
-              // 赶在原生把它判成左键拖拽（14px）之前接管；万一没赶上，原生侧 Cancel 会补抬起
-              PanGesture({ fingers: 1, direction: PanDirection.Vertical, distance: 4 })
-                .onActionStart((event: GestureEvent) => {
-                  this.kbPanStart(1, event);
-                })
-                .onActionUpdate((event: GestureEvent) => {
-                  this.kbPanUpdate(1, event.offsetY as number);
-                })
-                .onActionEnd(() => {
-                  this.kbPanEnd(1);
-                })
-                .onActionCancel(() => {
-                  this.kbPanEnd(1);
-                })
-            )
-          )
+          .gestureModifier(this.gestures)
           .onAxisEvent((event: AxisEvent) => {
             // 竖向滚动轴值，带方向（鼠标滚轮与触摸板双指滚动均覆盖）。scrollStep 恒正、
             // 不带方向，只能当步长用，不能当位移用。方向若相反把两处的负号去掉。
