@@ -2,6 +2,8 @@
 import { ShareDir } from './ShareFolders';
 
 export class SessionParams {
+  /** 来源电脑条目 id，空串=临时会话。会话内改触控板模式时按它回写 PCStore */
+  pcId: string = '';
   host: string = '';
   port: number = 3389;
   username: string = '';
@@ -14,6 +16,8 @@ export class SessionParams {
   scale: number = 0;
   /** 进入会话即切全屏（沉浸式） */
   fullscreen: boolean = false;
+  /** 初始是否为触控板模式（取自该电脑上次的选择） */
+  trackpad: boolean = false;
   /** 共享给远程的本地文件夹（见 ShareFolders）；undefined = 默认下载根 */
   shareDir?: ShareDir;
   /** 是否在独立会话窗口(SessionAbility)中运行；true 时断开=关闭该窗口 */

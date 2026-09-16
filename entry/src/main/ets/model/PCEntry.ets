@@ -19,6 +19,8 @@ export interface PCEntry {
   scale: number;
   /** 进入会话即切全屏（沉浸式），常配合动态分辨率 */
   fullscreen?: boolean;
+  /** 上次在这台电脑上用的是触控板模式（会话内切换即记住，下次连同一台自动沿用） */
+  trackpad?: boolean;
   /** 共享给远程的本地文件夹（见 ShareFolders）；undefined = 默认下载根 */
   shareDir?: ShareDir;
   createdAt: number;

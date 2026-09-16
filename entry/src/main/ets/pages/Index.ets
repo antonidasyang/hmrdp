@@ -95,6 +95,8 @@ struct Index {
     // 整对象 upsert 会把磁盘上已保存的分辨率/账号/共享目录覆盖回去。
     PCStore.touch(this.ctx(), pc.id);
     const params = new SessionParams(pc.host, pc.port, username, password, domain);
+    params.pcId = pc.id;
+    params.trackpad = pc.trackpad === true; // 沿用这台电脑上次选的触摸模式
     params.width = pc.width;
     params.height = pc.height;
     params.scale = pc.scale;
@@ -132,6 +134,8 @@ struct Index {
         height: params.height,
         scale: params.scale,
         fullscreen: params.fullscreen,
+        pcId: params.pcId,
+        trackpad: params.trackpad,
         shareDir: params.shareDir ? JSON.stringify(params.shareDir) : ''
       }
     };

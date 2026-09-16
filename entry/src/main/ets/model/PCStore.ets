@@ -66,6 +66,16 @@ export class PCStore {
     }
   }
 
+  /** 仅更新触控板模式，理由同 touch()：绝不用会话内的整对象回写覆盖其它字段 */
+  static setTrackpad(context: common.Context, id: string, on: boolean): void {
+    const list = PCStore.load(context);
+    const idx = list.findIndex((it) => it.id === id);
+    if (idx >= 0 && list[idx].trackpad !== on) {
+      list[idx].trackpad = on;
+      PCStore.saveAll(context, list);
+    }
+  }
+
   static remove(context: common.Context, id: string): void {
     const list = PCStore.load(context).filter((it) => it.id !== id);
     PCStore.saveAll(context, list);

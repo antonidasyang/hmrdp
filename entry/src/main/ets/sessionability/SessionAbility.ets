@@ -39,6 +39,8 @@ export default class SessionAbility extends UIAbility {
     sp.height = (p['height'] as number) ?? 0;
     sp.scale = (p['scale'] as number) ?? 0;
     sp.fullscreen = (p['fullscreen'] as boolean) ?? false;
+    sp.pcId = (p['pcId'] as string) ?? '';
+    sp.trackpad = (p['trackpad'] as boolean) ?? false;
     const sd = (p['shareDir'] as string) ?? '';
     if (sd.length > 0) {
       try {
