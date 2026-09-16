@@ -736,21 +736,22 @@ export struct SessionPage {
     }
   }
 
-  /** 单指竖向上推手势只在需要时才绑定（见 SessionGestures） */
+  /** 单指竖向上推手势只在键盘弹出时才绑定（见 SessionGestures） */
   private syncGestures(): void {
-    const want = this.kbHeight > 0 && !this.trackpadMode && !this.isPc;
+    const want = this.kbHeight > 0 && !this.isPc;
     if (this.gestures.singlePan !== want) {
       this.gestures.singlePan = want;
     }
   }
 
-  /** 键盘弹出期间是否由本手势上推画面。直接触摸模式单指拖即可（轻点仍是点击，
-   *  横向/双指手势不受影响）；触控板模式单指是移指针，改用双指拖。 */
+  /** 键盘弹出期间是否由本手势上推画面。规则统一：键盘在的时候，单指竖向拖 = 移动画面
+   *  （两种模式都是；轻点仍是点击，横向拖仍归远端），双指竖向拖也行。
+   *  触控板模式想上下移指针就先收键盘——比「直接触摸单指、触控板双指」好记得多。 */
   private kbPanAllowed(fingers: number): boolean {
     if (this.kbHeight <= 0 || this.isPc) {
       return false;
     }
-    return this.trackpadMode ? fingers === 2 : fingers === 1;
+    return fingers === 1 || fingers === 2;
   }
 
   /** fingers = 该 PanGesture 声明的指数；event 用来核对实际落下的指数 */
@@ -838,18 +839,22 @@ export struct SessionPage {
     }
     scale = Math.min(500, Math.max(100, scale));
 
-    // 分辨率跟随本机：width/height 为 0 时启用动态分辨率（disp 通道随窗口实时匹配）
+    // 分辨率跟随本机：width/height 为 0（跟随窗口/全屏）时启用动态分辨率（disp 随窗口精修）
     const dynamic = (this.params.width === 0 || this.params.height === 0);
     let initW = dynamic ? 0 : this.params.width;
     let initH = dynamic ? 0 : this.params.height;
-    if (dynamic && this.params.fullscreen) {
-      // 动态+全屏：初始用整屏分辨率，避免动态分辨率生效前偏低
-      // 固定分辨率不覆盖，尊重用户选择
+    if (dynamic) {
+      // 会话恒横屏，但 getDefaultDisplaySync() 返回的是设备自然方向（手机=竖屏 1320×2232）的
+      // 宽高。之前直接拿来当初值，等于把竖屏分辨率塞给远端，横屏 surface 一填充就横向拉伸
+      // （Windows 的方形「最大化」按钮被压成扁矩形即此症状）。取长边作宽、短边作高，先给一个
+      // 横屏正确的初值；动态分辨率随后按真实窗口尺寸精修。即便远端不支持 disp，比例也不会错。
       try {
         const d = display.getDefaultDisplaySync();
-        initW = d.width;
-        initH = d.height;
+        initW = Math.max(d.width, d.height);
+        initH = Math.min(d.width, d.height);
       } catch (e) {
+        initW = 0;
+        initH = 0;
       }
     }
     const config: HmConnectConfig = {
@@ -864,7 +869,7 @@ export struct SessionPage {
       dynamic: dynamic ? 1 : 0,
       drives: this.resolveShareDrives() // 磁盘重定向：选定的本地文件夹挂成远端网络盘
     };
-    console.info(`HMRDP connect w=${initW} h=${initH} dynamic=${dynamic} fullscreen=${this.params.fullscreen} userW=${this.params.width} userH=${this.params.height}`);
+    console.info(`HMRDP connect w=${initW} h=${initH} dynamic=${dynamic} fullscreen=${this.params.fullscreen} userW=${this.params.width} userH=${this.params.height} view=${this.viewW}x${this.viewH}vp`);
     this.errorText = '';
     this.statusText = '正在连接…';
     hmrdp.setTouchMode(this.trackpadMode); // 同步全局触摸映射器状态
@@ -996,7 +1001,7 @@ export struct SessionPage {
       });
     const list: GestureHandler<PanGestureHandler | PinchGestureHandler>[] = [pinch, pan2];
     if (singlePan) {
-      // 单指竖向拖动上推画面（仅直接触摸 + 键盘弹出时才绑定）。识别距离压到 4vp，
+      // 单指竖向拖动上推画面（仅键盘弹出时才绑定）。识别距离压到 4vp，
       // 赶在原生把它判成左键拖拽（14px）之前接管；万一没赶上，原生侧 Cancel 会补抬起
       list.push(new PanGestureHandler({ fingers: 1, direction: PanDirection.Vertical, distance: 4 })
         .onActionStart((e: GestureEvent) => {
@@ -1111,6 +1116,7 @@ export struct SessionPage {
           .onAreaChange((_o: Area, n: Area) => {
             this.viewW = n.width as number;
             this.viewH = n.height as number;
+            console.info(`HMRDP view area ${this.viewW}x${this.viewH}vp`);
           })
           .onLoad(() => {
             this.startConnect();

@@ -80,6 +80,7 @@ BOOL HmDesktopResize(rdpContext* context)
     rdpSettings* settings = context->settings;
     const UINT32 w = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
     const UINT32 h = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
+    HMLOGI("远端桌面尺寸变更 -> %{public}ux%{public}u", w, h);
     // 注意：GFX 开启时本回调经 gdi_ResetGraphics 在 drdynvc 线程触发（drdynvc 默认
     // async），并非 RDP 主线程；gdi_resize 必须与 PresentFrame 互斥，见 ResizeGdi。
     return SessionOf(context)->ResizeGdi(w, h) ? TRUE : FALSE;
@@ -377,6 +378,9 @@ BOOL HmPostConnect(freerdp* instance)
     update->DesktopResize = HmDesktopResize;
 
     RdpSession* session = SessionOf(instance->context);
+    HMLOGI("已连接，远端桌面 %{public}dx%{public}d 缩放 %{public}u%%", instance->context->gdi->width,
+           instance->context->gdi->height,
+           freerdp_settings_get_uint32(instance->context->settings, FreeRDP_DesktopScaleFactor));
     session->OnDesktopResize(instance->context->gdi->width, instance->context->gdi->height);
     session->NotifyState(SessionState::Connected, "");
     return TRUE;
@@ -774,6 +778,7 @@ void RdpSession::RequestResize(uint32_t w, uint32_t h)
 void RdpSession::OnDispConnected(DispClientContext* disp)
 {
     disp_ = disp; // 仅 RDP 线程访问
+    HMLOGI("disp 显示控制通道 %{public}s", disp ? "已就绪（支持动态分辨率）" : "断开");
     if (disp_ && resizePending_.load())
         SetEvent(inputSignal_); // 通道就绪，尽快补发待定尺寸
 }
@@ -1274,6 +1279,8 @@ bool RdpSession::PresentFrame()
 
     if (geometryDirty_) {
         // buffer 尺寸 = 远端桌面尺寸，合成器负责缩放到 surface
+        HMLOGI("buffer 几何 %{public}dx%{public}d -> surface %{public}llux%{public}llu", width, height,
+               static_cast<unsigned long long>(surfaceWidth_), static_cast<unsigned long long>(surfaceHeight_));
         OH_NativeWindow_NativeWindowHandleOpt(window_, SET_BUFFER_GEOMETRY, width, height);
         OH_NativeWindow_NativeWindowHandleOpt(window_, SET_FORMAT, NATIVEBUFFER_PIXEL_FMT_RGBX_8888);
         geometryDirty_ = false;
