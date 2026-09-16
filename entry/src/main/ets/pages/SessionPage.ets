@@ -17,6 +17,91 @@ import { SessionAliveResponder } from '../model/SessionProbe';
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
 
+/** 软键盘上方功能键条的高度（vp）。软键盘没有 Esc/方向键/PgUp 这些，远程桌面离不开， */
+const KEY_BAR_H = 40;
+
+/** 功能键：PS/2 set 1 扫描码 + 是否扩展键（E0 前缀） */
+interface FnKey {
+  label: string;
+  code: number;
+  ext: boolean;
+}
+
+/** 修饰键：粘滞式，点亮后随下一个键一起发出再自动松开 */
+interface ModKey {
+  label: string;
+  code: number;
+  ext: boolean;
+}
+
+// 顺序按远程桌面上的使用频度排：先编辑/导航，再 F 区
+const FN_KEYS: FnKey[] = [
+  { label: 'Esc', code: 0x01, ext: false },
+  { label: 'Tab', code: 0x0F, ext: false },
+  { label: '←', code: 0x4B, ext: true },
+  { label: '↑', code: 0x48, ext: true },
+  { label: '↓', code: 0x50, ext: true },
+  { label: '→', code: 0x4D, ext: true },
+  { label: 'Home', code: 0x47, ext: true },
+  { label: 'End', code: 0x4F, ext: true },
+  { label: 'PgUp', code: 0x49, ext: true },
+  { label: 'PgDn', code: 0x51, ext: true },
+  { label: 'Ins', code: 0x52, ext: true },
+  { label: 'Del', code: 0x53, ext: true },
+  { label: 'F1', code: 0x3B, ext: false },
+  { label: 'F2', code: 0x3C, ext: false },
+  { label: 'F3', code: 0x3D, ext: false },
+  { label: 'F4', code: 0x3E, ext: false },
+  { label: 'F5', code: 0x3F, ext: false },
+  { label: 'F6', code: 0x40, ext: false },
+  { label: 'F7', code: 0x41, ext: false },
+  { label: 'F8', code: 0x42, ext: false },
+  { label: 'F9', code: 0x43, ext: false },
+  { label: 'F10', code: 0x44, ext: false },
+  { label: 'F11', code: 0x57, ext: false },
+  { label: 'F12', code: 0x58, ext: false }
+];
+
+const MOD_KEYS: ModKey[] = [
+  { label: 'Ctrl', code: 0x1D, ext: false },
+  { label: 'Alt', code: 0x38, ext: false },
+  { label: 'Shift', code: 0x2A, ext: false },
+  { label: 'Win', code: 0x5B, ext: true }
+];
+
+/** 字母 A-Z 的扫描码，用于把软键盘打出的字符转成带修饰键的组合（Ctrl+C 等）。
+ *  与原生 OhosKeyToRdpScancode 的 kLetters 同表。 */
+const SC_LETTERS: number[] = [
+  0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, // A-J
+  0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, // K-T
+  0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C                          // U-Z
+];
+/** 数字 0-9 的扫描码 */
+const SC_DIGITS: number[] = [0x0B, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
+
+@Component
+struct KeyCap {
+  // 同 ToolButton：用 @Prop 而非 @Builder 值参，否则粘滞修饰键点亮后不刷新
+  @Prop label: string = '';
+  @Prop active: boolean = false;
+  action: () => void = () => {};
+
+  build() {
+    Row() {
+      Text(this.label)
+        .fontSize(13)
+        .fontColor(this.active ? '#111111' : Color.White)
+    }
+    .constraintSize({ minWidth: 40 })
+    .height(30)
+    .padding({ left: 9, right: 9 })
+    .justifyContent(FlexAlign.Center)
+    .borderRadius(6)
+    .backgroundColor(this.active ? '#4DA3FF' : '#33FFFFFF')
+    .onClick(() => { this.action(); })
+  }
+}
+
 // libhmrdp.so 的 CertRequest 本地镜像
 interface HmCertRequest {
   host: string;
@@ -146,6 +231,8 @@ export struct SessionPage {
   // 像 Windows App 那样拖一下就能看到被键盘挡住的内容。kbHeight 为 vp，0 = 键盘未弹出
   @State kbHeight: number = 0;
   @State kbShift: number = 0;
+  /** 功能键条上粘滞按下的修饰键（位掩码，见 MOD_KEYS 下标） */
+  @State stickyMods: number = 0;
   private baseKbShift: number = 0;
   // 正在上推画面的手势用了几根手指（0 = 没有）。PanGesture 的 fingers 是「至少几指」，
   // 双指拖动会把单指 Pan 一起触发，靠这个只认一个手势的回调，免得两边互相抢
@@ -698,6 +785,98 @@ export struct SessionPage {
     });
   }
 
+  // ---- 软键盘上方的功能键条（软键盘没有 Esc/方向键/Home/PgUp/F 区，远程桌面离不开）----
+
+  /** 键盘遮挡区总高 = 软键盘 + 功能键条；画面最多上推这么多 */
+  private panLimit(): number {
+    return this.kbHeight > 0 ? this.kbHeight + KEY_BAR_H : 0;
+  }
+
+  /** 当前粘滞按下的修饰键 */
+  private activeMods(): ModKey[] {
+    const out: ModKey[] = [];
+    for (let i = 0; i < MOD_KEYS.length; i++) {
+      if ((this.stickyMods & (1 << i)) !== 0) {
+        out.push(MOD_KEYS[i]);
+      }
+    }
+    return out;
+  }
+
+  /** 带上粘滞修饰键发一个键（按下、抬起，修饰键逆序松开），随后清空修饰键——
+   *  粘滞只作用于下一个键，和手机输入法的 Shift 一个语义 */
+  private sendWithMods(code: number, ext: boolean): void {
+    const mods = this.activeMods();
+    for (const m of mods) {
+      hmrdp.sendScancode(m.code, m.ext, true);
+    }
+    hmrdp.sendScancode(code, ext, true);
+    hmrdp.sendScancode(code, ext, false);
+    for (let i = mods.length - 1; i >= 0; i--) {
+      hmrdp.sendScancode(mods[i].code, mods[i].ext, false);
+    }
+    if (this.stickyMods !== 0) {
+      this.stickyMods = 0;
+    }
+  }
+
+  /** 软键盘打出的字符：无修饰键时走 Unicode（中文/符号都靠它），
+   *  有粘滞修饰键时转成扫描码组合，这样 Ctrl+C / Ctrl+V 这类才真正能用 */
+  private onInsertText(text: string): void {
+    if (this.stickyMods !== 0 && text.length === 1) {
+      const c = text.charCodeAt(0);
+      let sc = 0;
+      if (c >= 0x61 && c <= 0x7A) {
+        sc = SC_LETTERS[c - 0x61]; // a-z
+      } else if (c >= 0x41 && c <= 0x5A) {
+        sc = SC_LETTERS[c - 0x41]; // A-Z
+      } else if (c >= 0x30 && c <= 0x39) {
+        sc = SC_DIGITS[c - 0x30];
+      }
+      if (sc !== 0) {
+        this.sendWithMods(sc, false);
+        return;
+      }
+    }
+    for (let i = 0; i < text.length; i++) {
+      hmrdp.sendUnicode(text.charCodeAt(i));
+    }
+  }
+
+  @Builder
+  keyBar() {
+    Scroll() {
+      Row({ space: 6 }) {
+        ForEach(MOD_KEYS, (m: ModKey, idx: number) => {
+          KeyCap({
+            label: m.label,
+            active: (this.stickyMods & (1 << idx)) !== 0,
+            action: () => {
+              this.stickyMods = this.stickyMods ^ (1 << idx); // 再点一次取消
+            }
+          })
+          // key 必须带上点亮状态：ForEach 对 key 相同的项不重新执行 itemGenerator，
+          // 只写 label 的话粘滞修饰键点了不会变色（@Prop 拿不到新值）
+        }, (m: ModKey, idx: number) => `${m.label}${(this.stickyMods & (1 << idx)) !== 0 ? '1' : '0'}`)
+        ForEach(FN_KEYS, (k: FnKey) => {
+          KeyCap({
+            label: k.label,
+            active: false,
+            action: () => { this.sendWithMods(k.code, k.ext); }
+          })
+        }, (k: FnKey) => k.label)
+      }
+      .padding({ left: 10, right: 10 })
+      .height('100%')
+    }
+    .scrollable(ScrollDirection.Horizontal)
+    .scrollBar(BarState.Off)
+    .width('100%')
+    .height(KEY_BAR_H)
+    .backgroundColor('#E6000000')
+    .position({ left: 0, bottom: this.kbHeight })
+  }
+
   /** 监听软键盘高度：既拿到可上推的范围，也能感知用户用输入法自己的按钮收起了键盘 */
   private async setupKeyboardWatch(): Promise<void> {
     try {
@@ -727,9 +906,10 @@ export struct SessionPage {
       // 键盘收起（含输入法自己的收起按钮）：画面归位、状态同步
       this.kbShift = 0;
       this.keyboardShown = false;
+      this.stickyMods = 0;
     } else {
       this.keyboardShown = true;
-      this.kbShift = Math.min(this.kbShift, vp);
+      this.kbShift = Math.min(this.kbShift, this.panLimit());
     }
   }
 
@@ -758,8 +938,8 @@ export struct SessionPage {
     if (this.kbPanFingers !== fingers) {
       return;
     }
-    // 手指上滑（dy<0）→ 画面上推；范围 [0, 键盘高度]
-    this.kbShift = Math.min(this.kbHeight, Math.max(0, this.baseKbShift - dy));
+    // 手指上滑（dy<0）→ 画面上推；范围 [0, 键盘+功能键条高度]
+    this.kbShift = Math.min(this.panLimit(), Math.max(0, this.baseKbShift - dy));
   }
 
   private kbPanEnd(fingers: number): void {
@@ -780,9 +960,7 @@ export struct SessionPage {
         }
       });
       controller.on('insertText', (text: string) => {
-        for (let i = 0; i < text.length; i++) {
-          hmrdp.sendUnicode(text.charCodeAt(i));
-        }
+        this.onInsertText(text);
       });
       controller.on('deleteLeft', (length: number) => {
         for (let i = 0; i < length; i++) {
@@ -1009,7 +1187,8 @@ export struct SessionPage {
     .backgroundColor('#B3000000')
     .borderRadius(24)
     .padding(4)
-    .position({ right: 12, bottom: 40 + this.kbHeight }) // 键盘弹出时抬到键盘上方，别被盖住
+    // 键盘弹出时抬到软键盘+功能键条上方，别被盖住
+    .position({ right: 12, bottom: 40 + (this.kbHeight > 0 ? this.kbHeight + KEY_BAR_H : 0) })
   }
 
   build() {
@@ -1121,6 +1300,10 @@ export struct SessionPage {
               hmrdp.sendWheel(notches * 120, event.x, event.y);
             }
           })
+
+        if (this.connected && this.kbHeight > 0) {
+          this.keyBar()
+        }
 
         if (this.connected) {
           this.sessionToolbar()

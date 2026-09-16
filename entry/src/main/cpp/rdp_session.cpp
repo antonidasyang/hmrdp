@@ -957,10 +957,14 @@ void RdpSession::PushInput(const InputEvent& event)
 {
     if (!running_.load())
         return;
-    // 移动/按键事件带的坐标就是指针新位置（滚轮的坐标只是“在哪滚”，不动指针）
+    // 移动/按键事件带的坐标就是指针新位置（滚轮的坐标只是“在哪滚”，不动指针）。
+    // 两个 exchange 必须各自求值后再比较：写成 `x.exchange(..)!=.. || y.exchange(..)!=..`
+    // 会被 || 短路——X 一变就跳过 Y 的 exchange，cursorY_ 长期停在旧值，表现为本地光标
+    // 上下不动、下次按下 SyncCursor 取到陈旧 Y 后指针突然跳一下（左右却始终正常）。
     if (event.kind == InputEvent::Kind::Mouse && (event.flags & PTR_FLAGS_WHEEL) == 0) {
-        const bool moved = cursorX_.exchange(event.x) != event.x || cursorY_.exchange(event.y) != event.y;
-        if (moved && cursorOverlay_.load())
+        const uint16_t prevX = cursorX_.exchange(event.x);
+        const uint16_t prevY = cursorY_.exchange(event.y);
+        if ((prevX != event.x || prevY != event.y) && cursorOverlay_.load())
             presentPending_.store(true); // 画面没变也要重提交一帧，光标才会动
     }
     {
