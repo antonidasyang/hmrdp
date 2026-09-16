@@ -41,3 +41,28 @@ export function isFoldExpanded(): boolean {
     return false;
   }
 }
+
+/** 「跟随设备」时的远端显示缩放（DesktopScaleFactor 百分比）。
+ *
+ *  直接拿 densityPixels×100 在手机上会得到 300%+：手机像素密度是按贴脸看设计的，
+ *  远程桌面照搬会让可用面积缩到 900×400 级别，什么都摆不下。手机取密度的一半
+ *  （3.25 → 175%），平板取 3/4，PC/2in1 像素密度本来就接近 Windows 的定义、原样用。
+ *  结果就近落到 Windows 自己的档位（25% 一档），并夹到 [100, 500]。 */
+export function defaultScalePercent(): number {
+  let density = 1;
+  try {
+    density = display.getDefaultDisplaySync().densityPixels;
+  } catch (e) {
+    return 100;
+  }
+  if (!(density > 0)) {
+    return 100;
+  }
+  let factor = 1;
+  if (!isPcDevice()) {
+    factor = isLargeScreen() ? 0.75 : 0.5;
+  }
+  const raw = density * 100 * factor;
+  const snapped = Math.round(raw / 25) * 25;
+  return Math.min(500, Math.max(100, snapped));
+}

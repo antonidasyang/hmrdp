@@ -9,6 +9,7 @@ import { EditAccountParams } from './EditAccountPage';
 import { ShareDir, DEFAULT_SHARE_DIR, shareLabel, ShareTarget, SHARE_TARGETS, ensureFilePermissions } from '../model/ShareFolders';
 import { Environment } from '@kit.CoreFileKit';
 import fs from '@ohos.file.fs';
+import { defaultScalePercent } from '../model/DeviceKit';
 
 export class EditPCParams {
   /** 空串 = 新建 */
@@ -40,10 +41,14 @@ interface ScaleOption {
 }
 
 const SCALES: ScaleOption[] = [
-  { label: '跟随设备', value: 0 },
+  // 「跟随设备」的实际取值见 DeviceKit.defaultScalePercent，标签里直接标出来，用户不用猜
+  { label: `跟随设备（${defaultScalePercent()}%）`, value: 0 },
   { label: '100%', value: 100 },
+  { label: '125%', value: 125 },
   { label: '150%', value: 150 },
+  { label: '175%', value: 175 },
   { label: '200%', value: 200 },
+  { label: '250%', value: 250 },
   { label: '300%', value: 300 },
 ];
 

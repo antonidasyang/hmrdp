@@ -7,7 +7,7 @@ import { resolveSharePath, SHARE_TARGETS } from '../model/ShareFolders';
 import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
-import { isPcDevice, isLargeScreen } from '../model/DeviceKit';
+import { isPcDevice, isLargeScreen, defaultScalePercent } from '../model/DeviceKit';
 import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
   MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
 import { inputConsumer, KeyCode } from '@kit.InputKit';
@@ -141,6 +141,18 @@ export struct SessionPage {
   private baseScale: number = 1;
   private baseOffsetX: number = 0;
   private baseOffsetY: number = 0;
+  // 软键盘盖住画面下半部分时，允许把画面整体上推（最多推到键盘顶边），
+  // 像 Windows App 那样拖一下就能看到被键盘挡住的内容。kbHeight 为 vp，0 = 键盘未弹出
+  @State kbHeight: number = 0;
+  @State kbShift: number = 0;
+  private baseKbShift: number = 0;
+  // 正在上推画面的手势用了几根手指（0 = 没有）。PanGesture 的 fingers 是「至少几指」，
+  // 双指拖动会把单指 Pan 一起触发，靠这个只认一个手势的回调，免得两边互相抢
+  private kbPanFingers: number = 0;
+  private kbWin: window.Window | undefined = undefined;
+  private kbHeightCb: (h: number) => void = (h: number) => {
+    this.onKeyboardHeight(h);
+  };
   private viewW: number = 0;
   private viewH: number = 0;
   // 滚轮：不足一档的余量（单位＝档），以及首个事件学到的“一档轴值”
@@ -670,6 +682,77 @@ export struct SessionPage {
     });
   }
 
+  /** 监听软键盘高度：既拿到可上推的范围，也能感知用户用输入法自己的按钮收起了键盘 */
+  private async setupKeyboardWatch(): Promise<void> {
+    try {
+      this.kbWin = await window.getLastWindow(this.ctx());
+      this.kbWin.on('keyboardHeightChange', this.kbHeightCb);
+    } catch (e) {
+      const err = e as BusinessError;
+      console.warn(`HMRDP 监听键盘高度失败: code=${err.code}`);
+    }
+  }
+
+  private teardownKeyboardWatch(): void {
+    if (this.kbWin) {
+      try {
+        this.kbWin.off('keyboardHeightChange', this.kbHeightCb);
+      } catch (e) {
+      }
+      this.kbWin = undefined;
+    }
+  }
+
+  private onKeyboardHeight(px: number): void {
+    const vp = px > 0 ? this.getUIContext().px2vp(px) : 0;
+    console.info(`HMRDP keyboard height px=${px} vp=${vp}`);
+    this.kbHeight = vp;
+    if (vp <= 0) {
+      // 键盘收起（含输入法自己的收起按钮）：画面归位、状态同步
+      this.kbShift = 0;
+      this.keyboardShown = false;
+    } else {
+      this.keyboardShown = true;
+      this.kbShift = Math.min(this.kbShift, vp);
+    }
+  }
+
+  /** 键盘弹出期间是否由本手势上推画面。直接触摸模式单指拖即可（轻点仍是点击，
+   *  横向/双指手势不受影响）；触控板模式单指是移指针，改用双指拖。 */
+  private kbPanAllowed(fingers: number): boolean {
+    if (this.kbHeight <= 0 || this.isPc) {
+      return false;
+    }
+    return this.trackpadMode ? fingers === 2 : fingers === 1;
+  }
+
+  /** fingers = 该 PanGesture 声明的指数；event 用来核对实际落下的指数 */
+  private kbPanStart(fingers: number, event: GestureEvent): boolean {
+    if (this.kbPanFingers !== 0 || event.fingerList.length !== fingers || !this.kbPanAllowed(fingers)) {
+      return false;
+    }
+    this.kbPanFingers = fingers;
+    this.baseKbShift = this.kbShift;
+    hmrdp.setGestureActive(true); // 这段触摸不再转成远端鼠标事件
+    return true;
+  }
+
+  private kbPanUpdate(fingers: number, dy: number): void {
+    if (this.kbPanFingers !== fingers) {
+      return;
+    }
+    // 手指上滑（dy<0）→ 画面上推；范围 [0, 键盘高度]
+    this.kbShift = Math.min(this.kbHeight, Math.max(0, this.baseKbShift - dy));
+  }
+
+  private kbPanEnd(fingers: number): void {
+    if (this.kbPanFingers !== fingers) {
+      return;
+    }
+    this.kbPanFingers = 0;
+    hmrdp.setGestureActive(false);
+  }
+
   private async showKeyboard(): Promise<void> {
     const controller = inputMethod.getController();
     if (!this.imeAttached) {
@@ -724,11 +807,7 @@ export struct SessionPage {
   private startConnect(): void {
     let scale = this.params.scale;
     if (scale === 0) {
-      try {
-        scale = Math.round(display.getDefaultDisplaySync().densityPixels * 100);
-      } catch (e) {
-        scale = 100;
-      }
+      scale = defaultScalePercent(); // 手机取密度一半、平板 3/4、PC 原样，见 DeviceKit
     }
     scale = Math.min(500, Math.max(100, scale));
 
@@ -783,6 +862,9 @@ export struct SessionPage {
       this.connected = true;
       this.errorText = '';
       this.setupClipboard();
+      if (!this.isPc) {
+        this.setupKeyboardWatch(); // 软键盘高度：上推画面的范围 + 工具条抬升
+      }
       // 让主窗口能探测到这个会话：关闭主窗口前会据此提示「会断开全部连接」
       this.aliveResponder.start(this.params.host);
       if (this.isPc) {
@@ -905,7 +987,7 @@ export struct SessionPage {
     .backgroundColor('#B3000000')
     .borderRadius(24)
     .padding(4)
-    .position({ right: 12, bottom: 40 })
+    .position({ right: 12, bottom: 40 + this.kbHeight }) // 键盘弹出时抬到键盘上方，别被盖住
   }
 
   build() {
@@ -918,7 +1000,7 @@ export struct SessionPage {
           .focusOnTouch(true)
           .defaultFocus(true)
           .scale({ x: this.viewScale, y: this.viewScale })
-          .translate({ x: this.offsetX, y: this.offsetY })
+          .translate({ x: this.offsetX, y: this.offsetY - this.kbShift })
           .onAreaChange((_o: Area, n: Area) => {
             this.viewW = n.width as number;
             this.viewH = n.height as number;
@@ -945,22 +1027,56 @@ export struct SessionPage {
                   }
                   hmrdp.setGestureActive(false);
                 }),
-              // 双指拖动平移（缩放后才生效）
+              // 双指拖动：缩放后平移画面；触控板模式且键盘弹出时上推画面。
+              // 两者都不成立时不接管触摸（否则原生的双指滚轮会被这里吃掉）
               PanGesture({ fingers: 2 })
-                .onActionStart(() => {
-                  hmrdp.setGestureActive(true);
-                  this.baseOffsetX = this.offsetX;
-                  this.baseOffsetY = this.offsetY;
+                .onActionStart((event: GestureEvent) => {
+                  if (this.kbPanStart(2, event)) {
+                    return;
+                  }
+                  if (this.viewScale > 1) {
+                    hmrdp.setGestureActive(true);
+                    this.baseOffsetX = this.offsetX;
+                    this.baseOffsetY = this.offsetY;
+                  }
                 })
                 .onActionUpdate((event: GestureEvent) => {
-                  if (this.viewScale > 1) {
+                  if (this.kbPanFingers === 2) {
+                    this.kbPanUpdate(2, event.offsetY as number);
+                  } else if (this.viewScale > 1) {
                     this.offsetX = this.baseOffsetX + (event.offsetX as number);
                     this.offsetY = this.baseOffsetY + (event.offsetY as number);
                     this.clampOffsets();
                   }
                 })
                 .onActionEnd(() => {
-                  hmrdp.setGestureActive(false);
+                  if (this.kbPanFingers === 2) {
+                    this.kbPanEnd(2);
+                  } else if (this.viewScale > 1) {
+                    hmrdp.setGestureActive(false);
+                  }
+                })
+                .onActionCancel(() => {
+                  if (this.kbPanFingers === 2) {
+                    this.kbPanEnd(2);
+                  } else if (this.viewScale > 1) {
+                    hmrdp.setGestureActive(false);
+                  }
+                }),
+              // 单指竖向拖动：仅直接触摸模式 + 键盘弹出时上推画面。识别距离压到 4vp，
+              // 赶在原生把它判成左键拖拽（14px）之前接管；万一没赶上，原生侧 Cancel 会补抬起
+              PanGesture({ fingers: 1, direction: PanDirection.Vertical, distance: 4 })
+                .onActionStart((event: GestureEvent) => {
+                  this.kbPanStart(1, event);
+                })
+                .onActionUpdate((event: GestureEvent) => {
+                  this.kbPanUpdate(1, event.offsetY as number);
+                })
+                .onActionEnd(() => {
+                  this.kbPanEnd(1);
+                })
+                .onActionCancel(() => {
+                  this.kbPanEnd(1);
                 })
             )
           )
@@ -1079,6 +1195,7 @@ export struct SessionPage {
       this.aliveResponder.stop();
       this.teardownClipboard();
       this.teardownKeyInterception();
+      this.teardownKeyboardWatch();
       this.releaseKeyboard();
       hmrdp.disconnect();
     })

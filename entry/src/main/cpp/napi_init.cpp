@@ -472,7 +472,7 @@ void DispatchTouchEvent(OH_NativeXComponent* component, void* window)
         return;
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_gestureActive.load()) {
-        g_touchMapper.Reset();
+        g_touchMapper.Cancel(CurrentSession()); // 手势接管：拖拽中的左键要补抬起
         return;
     }
     g_touchMapper.OnTouch(event, CurrentSession());
@@ -708,6 +708,8 @@ napi_value Connect(napi_env env, napi_callback_info info)
     g_session->SetCertCallback(OnCertRequest, nullptr);
     g_session->SetClipCallback(OnClipboardText, nullptr);
     g_session->SetClipImageCallback(OnClipboardImage, nullptr);
+    // setTouchMode 常在 connect 之前调用，这里把触控板态补给新会话（重连/重试也走这）
+    g_session->SetCursorOverlay(g_touchEnabled.load() && g_touchMapper.IsTrackpad());
     if (g_window)
         g_session->AttachWindow(g_window, g_surfaceW, g_surfaceH);
 
@@ -755,6 +757,8 @@ napi_value SetTouchMode(napi_env env, napi_callback_info info)
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_touchMapper.SetTrackpadMode(trackpad);
+        if (g_session)
+            g_session->SetCursorOverlay(trackpad); // 触控板模式手指不在指针处，本地把光标画出来
     }
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);

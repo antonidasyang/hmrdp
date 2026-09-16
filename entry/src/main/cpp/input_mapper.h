@@ -22,6 +22,9 @@ class TouchMapper {
 public:
     void OnTouch(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
     void Reset();
+    // ArkUI 手势接管触摸时调用：拖拽中已按下的左键要补抬起，否则远端一直按着
+    void Cancel(RdpSession* session);
+    bool IsTrackpad() const { return trackpad_; }
     // false = 直接触摸模式，true = 触控板（相对指针）模式
     void SetTrackpadMode(bool trackpad);
 
@@ -30,7 +33,7 @@ private:
 
     void OnTouchDirect(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
     void OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
-    void EnsureCursor(RdpSession* session);
+    void SyncCursor(RdpSession* session);
     void SendCursorMove(RdpSession* session);
 
     bool trackpad_ = false;
@@ -44,8 +47,8 @@ private:
     bool moved_ = false;
     int64_t downTimeNs_ = 0;
 
-    // 触控板虚拟指针（远端桌面坐标）
-    bool cursorInit_ = false;
+    // 触控板虚拟指针（远端桌面坐标）。会话持有权威位置（含远端 SetPosition 归位），
+    // 每次按下时从会话同步，这里只是手势期间的浮点工作副本
     float cursorX_ = 0;
     float cursorY_ = 0;
     float trackpadSensitivity_ = 1.6f;

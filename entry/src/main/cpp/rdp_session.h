@@ -62,6 +62,13 @@ using ClipCallback = void (*)(const char* utf8Text, void* userData);
 // 远端剪贴板图片(PNG) -> ArkTS（RDP 线程调用，实现方负责线程安全）
 using ClipImageCallback = void (*)(const uint8_t* data, size_t len, void* userData);
 
+// 远端下发的指针形状。FreeRDP 按 rdpPointer::size 分配后以 rdpPointer* 传回，
+// 所以 base 必须是首成员；无构造函数（calloc 出来的），像素缓冲手动管理。
+struct HmPointer {
+    rdpPointer base;
+    uint8_t* bgra;   // width*height，PIXEL_FORMAT_BGRA32，直通 alpha
+};
+
 class RdpSession {
 public:
     RdpSession(SessionConfig config, StateCallback cb, void* cbUserData);
@@ -97,6 +104,8 @@ public:
     void SendPointerDesktop(uint16_t flags, uint16_t desktopX, uint16_t desktopY);
     // delta: 正值向上滚动，单位为标准滚轮档（120/档）
     void SendWheel(int32_t delta, float surfaceX, float surfaceY);
+    // 同上，但直接给远端桌面坐标（触控板模式在虚拟指针处滚动）
+    void SendWheelDesktop(int32_t delta, uint16_t desktopX, uint16_t desktopY);
     void SendScancode(uint16_t scancode, bool extended, bool down);
     void SendUnicode(uint16_t utf16Unit); // 自动发送按下+抬起
 
@@ -105,6 +114,23 @@ public:
         w = desktopWidth_.load();
         h = desktopHeight_.load();
     }
+
+    // ---- 本地绘制的鼠标指针 ----
+    // 触控板模式手指不在指针处，远端又不把光标画进画面（RDP 光标走单独的 pointer
+    // 更新），不在本地合成就不知道指针在哪。开启后 PresentFrame 把当前形状叠在帧上。
+    void SetCursorOverlay(bool on); // 任意线程
+    // 指针当前所在的远端桌面坐标（本地输入与远端 SetPosition 共同维护）
+    void GetCursorPos(uint32_t& x, uint32_t& y) const
+    {
+        x = cursorX_.load();
+        y = cursorY_.load();
+    }
+    // 以下供 freerdp 指针回调使用（RDP 线程）
+    void OnPointerSet(const HmPointer* pointer); // 远端切换光标形状
+    void OnPointerSetNull();                     // 远端隐藏光标
+    void OnPointerSetDefault();                  // 远端要求系统默认箭头
+    void OnPointerPosition(uint32_t x, uint32_t y); // 远端移动了光标（如 Win+D 后归位）
+    void OnPointerFree(const HmPointer* pointer);   // 指针缓存淘汰，别再引用
 
     bool IsDynamicResolution() const { return config_.dynamicResolution; }
     // 动态分辨率：请求把远端桌面调整为 w×h（任意线程；经 disp 通道在 RDP 线程下发）
@@ -159,6 +185,10 @@ private:
     bool MapToDesktop(float sx, float sy, uint16_t& dx, uint16_t& dy);
     void SendResizeIfPending();         // RDP 线程：有待定尺寸则经 disp 下发布局
     void AdvertiseClipboardIfPending(); // RDP 线程：本地剪贴板有更新则广告格式
+    // 把当前指针形状 alpha 混合到已拷贝好的输出缓冲上（PresentFrame 内、windowMutex_ 已持有）
+    void DrawCursor(uint8_t* dst, uint32_t dstStride, int32_t frameW, int32_t frameH);
+    void EnsureDefaultCursor(); // 懒生成内置箭头（按 DesktopScaleFactor 整数放大）
+    void RequestPresent();      // 光标变化时也要重新提交一帧
 
     SessionConfig config_;
     StateCallback stateCb_;
@@ -206,6 +236,19 @@ private:
     std::atomic<bool> presentPending_{ false };
     uint32_t presentCount_ = 0;  // 提交频率诊断计数
     uint64_t presentLogMs_ = 0;
+
+    // 本地指针。pointer_ 由 RDP 线程的指针回调写、PresentFrame（RDP 线程）读；
+    // 位置由触摸线程写，故用原子。cursorMutex_ 兜住形状指针与默认箭头缓冲。
+    std::mutex cursorMutex_;
+    const HmPointer* pointer_ = nullptr; // 当前形状；nullptr 时看 pointerHidden_ 决定画默认箭头还是不画
+    bool pointerHidden_ = false;
+    std::vector<uint8_t> defaultCursor_; // 内置箭头 BGRA32
+    uint32_t defaultCursorW_ = 0;
+    uint32_t defaultCursorH_ = 0;
+    std::atomic<bool> cursorOverlay_{ false };
+    std::atomic<bool> cursorInit_{ false }; // 首次拿到桌面尺寸时把指针放到屏幕中央
+    std::atomic<uint32_t> cursorX_{ 0 };
+    std::atomic<uint32_t> cursorY_{ 0 };
 
     std::mutex inputMutex_;
     std::deque<InputEvent> inputQueue_;

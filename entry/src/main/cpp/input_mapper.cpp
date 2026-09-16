@@ -41,16 +41,24 @@ void TouchMapper::SetTrackpadMode(bool trackpad)
     Reset();
 }
 
-void TouchMapper::EnsureCursor(RdpSession* session)
+void TouchMapper::Cancel(RdpSession* session)
 {
-    if (cursorInit_)
-        return;
-    uint32_t w = 0;
-    uint32_t h = 0;
-    session->GetDesktopSize(w, h);
-    cursorX_ = w > 0 ? w / 2.0f : 0;
-    cursorY_ = h > 0 ? h / 2.0f : 0;
-    cursorInit_ = (w > 0 && h > 0);
+    if (mode_ == Mode::LeftDrag && session) {
+        if (trackpad_)
+            session->SendPointerDesktop(PTR_FLAGS_BUTTON1, (uint16_t)cursorX_, (uint16_t)cursorY_);
+        else
+            session->SendPointer(PTR_FLAGS_BUTTON1, lastX_, lastY_);
+    }
+    Reset();
+}
+
+void TouchMapper::SyncCursor(RdpSession* session)
+{
+    uint32_t x = 0;
+    uint32_t y = 0;
+    session->GetCursorPos(x, y);
+    cursorX_ = static_cast<float>(x);
+    cursorY_ = static_cast<float>(y);
 }
 
 void TouchMapper::SendCursorMove(RdpSession* session)
@@ -84,7 +92,6 @@ void TouchMapper::OnTouch(const OH_NativeXComponent_TouchEvent& event, RdpSessio
 // 触控板模式：单指相对移动虚拟指针，轻点=左键，双指滑动=滚轮，双指轻点=右键
 void TouchMapper::OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, RdpSession* session)
 {
-    EnsureCursor(session);
     const float x = event.x;
     const float y = event.y;
     const uint32_t pressed = CountPressed(event);
@@ -92,6 +99,7 @@ void TouchMapper::OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, R
     switch (event.type) {
         case OH_NATIVEXCOMPONENT_DOWN:
             if (mode_ == Mode::Idle) {
+                SyncCursor(session); // 远端可能已把指针挪走（如 Win+D），从会话取权威位置
                 mode_ = Mode::Pending;
                 downX_ = lastX_ = x;
                 downY_ = lastY_ = y;
@@ -118,7 +126,8 @@ void TouchMapper::OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, R
                 scrollResidual_ += (y - lastY_);
                 while (fabsf(scrollResidual_) >= kWheelStepPx) {
                     const int32_t dir = scrollResidual_ > 0 ? 1 : -1;
-                    session->SendWheel(dir > 0 ? -120 : 120, 0, 0);
+                    // 滚轮要发到指针所在处：Windows 按事件坐标决定滚哪个窗口
+                    session->SendWheelDesktop(dir > 0 ? -120 : 120, (uint16_t)cursorX_, (uint16_t)cursorY_);
                     scrollResidual_ -= dir * kWheelStepPx;
                     scrolled_ = true;
                 }

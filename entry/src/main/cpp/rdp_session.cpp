@@ -8,6 +8,8 @@
 #include <cstring>
 
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/graphics.h>
+#include <freerdp/codec/color.h>
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <freerdp/error.h>
@@ -249,6 +251,103 @@ void HmOnChannelDisconnected(void* context, const ChannelDisconnectedEventArgs* 
         session->OnCliprdrDisconnected();
 }
 
+// ---- 指针形状回调：远端光标不在画面里，形状/位置单独下发，本地按需合成 ----
+
+BOOL HmPointerNew(rdpContext* context, rdpPointer* pointer)
+{
+    HmPointer* p = reinterpret_cast<HmPointer*>(pointer);
+    if (!p || pointer->width == 0 || pointer->height == 0)
+        return FALSE;
+    const size_t size = 4ull * pointer->width * pointer->height;
+    p->bgra = static_cast<uint8_t*>(malloc(size));
+    if (!p->bgra)
+        return FALSE;
+    // xor/and 掩码 -> 直通 alpha 的 BGRA；单色“反色”光标由 FreeRDP 近似处理
+    if (!freerdp_image_copy_from_pointer_data(p->bgra, PIXEL_FORMAT_BGRA32, 0, 0, 0, pointer->width,
+                                              pointer->height, pointer->xorMaskData,
+                                              pointer->lengthXorMask, pointer->andMaskData,
+                                              pointer->lengthAndMask, pointer->xorBpp,
+                                              &context->gdi->palette)) {
+        free(p->bgra);
+        p->bgra = nullptr;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+void HmPointerFree(rdpContext* context, rdpPointer* pointer)
+{
+    HmPointer* p = reinterpret_cast<HmPointer*>(pointer);
+    if (!p)
+        return;
+    SessionOf(context)->OnPointerFree(p);
+    free(p->bgra);
+    p->bgra = nullptr;
+}
+
+BOOL HmPointerSet(rdpContext* context, rdpPointer* pointer)
+{
+    SessionOf(context)->OnPointerSet(reinterpret_cast<const HmPointer*>(pointer));
+    return TRUE;
+}
+
+BOOL HmPointerSetNull(rdpContext* context)
+{
+    SessionOf(context)->OnPointerSetNull();
+    return TRUE;
+}
+
+BOOL HmPointerSetDefault(rdpContext* context)
+{
+    SessionOf(context)->OnPointerSetDefault();
+    return TRUE;
+}
+
+BOOL HmPointerSetPosition(rdpContext* context, UINT32 x, UINT32 y)
+{
+    SessionOf(context)->OnPointerPosition(x, y);
+    return TRUE;
+}
+
+void HmRegisterPointer(rdpGraphics* graphics)
+{
+    rdpPointer pointer = {};
+    pointer.size = sizeof(HmPointer);
+    pointer.New = HmPointerNew;
+    pointer.Free = HmPointerFree;
+    pointer.Set = HmPointerSet;
+    pointer.SetNull = HmPointerSetNull;
+    pointer.SetDefault = HmPointerSetDefault;
+    pointer.SetPosition = HmPointerSetPosition;
+    graphics_register_pointer(graphics, &pointer);
+}
+
+// 内置默认箭头（经典 Windows 箭头 12×19，热点 (0,0)）：X=黑边 o=白填充 .=透明。
+// 远端要求 SYSPTR_DEFAULT、或形状尚未下发时用它。
+constexpr uint32_t kArrowW = 12;
+constexpr uint32_t kArrowH = 19;
+const char* const kArrowRows[kArrowH] = {
+    "X...........",
+    "XX..........",
+    "XoX.........",
+    "XooX........",
+    "XoooX.......",
+    "XooooX......",
+    "XoooooX.....",
+    "XooooooX....",
+    "XoooooooX...",
+    "XooooooooX..",
+    "XoooooooooX.",
+    "XooooooXXXXX",
+    "XoooXooX....",
+    "XooXXooX....",
+    "XoX..XooX...",
+    "XX...XooX...",
+    "X.....XooX..",
+    "......XooX..",
+    ".......XX...",
+};
+
 BOOL HmPreConnect(freerdp* instance)
 {
     rdpContext* context = instance->context;
@@ -270,6 +369,7 @@ BOOL HmPostConnect(freerdp* instance)
 {
     if (!gdi_init(instance, PIXEL_FORMAT_RGBX32))
         return FALSE;
+    HmRegisterPointer(instance->context->graphics); // gdi 只注册 bitmap/glyph，指针要自己挂
 
     rdpUpdate* update = instance->context->update;
     update->BeginPaint = HmBeginPaint;
@@ -616,6 +716,15 @@ void RdpSession::OnDesktopResize(uint32_t w, uint32_t h)
 {
     desktopWidth_.store(w);
     desktopHeight_.store(h);
+    if (w > 0 && h > 0) {
+        if (!cursorInit_.exchange(true)) {
+            cursorX_.store(w / 2); // 首次：指针放中央
+            cursorY_.store(h / 2);
+        } else {
+            cursorX_.store(std::min(cursorX_.load(), w - 1)); // 分辨率变小时收回屏内
+            cursorY_.store(std::min(cursorY_.load(), h - 1));
+        }
+    }
     std::lock_guard<std::mutex> lock(windowMutex_);
     geometryDirty_ = true;
 }
@@ -631,6 +740,10 @@ bool RdpSession::ResizeGdi(uint32_t w, uint32_t h)
         return false;
     desktopWidth_.store(w);
     desktopHeight_.store(h);
+    if (w > 0 && h > 0) {
+        cursorX_.store(std::min(cursorX_.load(), w - 1));
+        cursorY_.store(std::min(cursorY_.load(), h - 1));
+    }
     geometryDirty_ = true;
     return true;
 }
@@ -839,6 +952,12 @@ void RdpSession::PushInput(const InputEvent& event)
 {
     if (!running_.load())
         return;
+    // 移动/按键事件带的坐标就是指针新位置（滚轮的坐标只是“在哪滚”，不动指针）
+    if (event.kind == InputEvent::Kind::Mouse && (event.flags & PTR_FLAGS_WHEEL) == 0) {
+        const bool moved = cursorX_.exchange(event.x) != event.x || cursorY_.exchange(event.y) != event.y;
+        if (moved && cursorOverlay_.load())
+            presentPending_.store(true); // 画面没变也要重提交一帧，光标才会动
+    }
     {
         std::lock_guard<std::mutex> lock(inputMutex_);
         if (inputQueue_.size() > 512) // 背压：丢弃最旧的移动事件
@@ -926,9 +1045,18 @@ void RdpSession::SendPointerDesktop(uint16_t flags, uint16_t desktopX, uint16_t 
 
 void RdpSession::SendWheel(int32_t delta, float surfaceX, float surfaceY)
 {
+    uint16_t dx = 0;
+    uint16_t dy = 0;
+    MapToDesktop(surfaceX, surfaceY, dx, dy);
+    SendWheelDesktop(delta, dx, dy);
+}
+
+void RdpSession::SendWheelDesktop(int32_t delta, uint16_t desktopX, uint16_t desktopY)
+{
     InputEvent event = {};
     event.kind = InputEvent::Kind::Mouse;
-    MapToDesktop(surfaceX, surfaceY, event.x, event.y);
+    event.x = desktopX;
+    event.y = desktopY;
 
     int32_t remaining = delta;
     while (remaining != 0) {
@@ -975,6 +1103,158 @@ void RdpSession::PresentIfDirty()
     if (!presentPending_.exchange(false))
         return;
     PresentFrame();
+}
+
+// ---- 本地指针合成 ----
+
+void RdpSession::SetCursorOverlay(bool on)
+{
+    if (cursorOverlay_.exchange(on) == on)
+        return;
+    RequestPresent(); // 开/关都要重画一帧：开了画上去，关了擦掉
+}
+
+void RdpSession::RequestPresent()
+{
+    presentPending_.store(true);
+    if (inputSignal_)
+        SetEvent(inputSignal_); // 唤醒事件循环，别等下一个网络事件
+}
+
+void RdpSession::OnPointerSet(const HmPointer* pointer)
+{
+    {
+        std::lock_guard<std::mutex> lock(cursorMutex_);
+        pointer_ = pointer;
+        pointerHidden_ = false;
+    }
+    if (cursorOverlay_.load())
+        RequestPresent();
+}
+
+void RdpSession::OnPointerSetNull()
+{
+    {
+        std::lock_guard<std::mutex> lock(cursorMutex_);
+        pointer_ = nullptr;
+        pointerHidden_ = true;
+    }
+    if (cursorOverlay_.load())
+        RequestPresent();
+}
+
+void RdpSession::OnPointerSetDefault()
+{
+    {
+        std::lock_guard<std::mutex> lock(cursorMutex_);
+        pointer_ = nullptr;
+        pointerHidden_ = false;
+    }
+    if (cursorOverlay_.load())
+        RequestPresent();
+}
+
+void RdpSession::OnPointerPosition(uint32_t x, uint32_t y)
+{
+    cursorX_.store(x);
+    cursorY_.store(y);
+    if (cursorOverlay_.load())
+        RequestPresent();
+}
+
+void RdpSession::OnPointerFree(const HmPointer* pointer)
+{
+    std::lock_guard<std::mutex> lock(cursorMutex_);
+    if (pointer_ == pointer)
+        pointer_ = nullptr; // 缓存淘汰了当前形状：退回默认箭头，别悬空
+}
+
+void RdpSession::EnsureDefaultCursor()
+{
+    if (!defaultCursor_.empty())
+        return;
+    // 远端按 DesktopScaleFactor 放大它自己的光标，内置箭头也按同比例整数放大才不显得小
+    const uint32_t k = std::max(1u, (layoutScale_ + 50) / 100);
+    defaultCursorW_ = kArrowW * k;
+    defaultCursorH_ = kArrowH * k;
+    defaultCursor_.assign(4ull * defaultCursorW_ * defaultCursorH_, 0);
+    for (uint32_t y = 0; y < defaultCursorH_; y++) {
+        for (uint32_t x = 0; x < defaultCursorW_; x++) {
+            const char c = kArrowRows[y / k][x / k];
+            if (c == '.')
+                continue;
+            uint8_t* px = defaultCursor_.data() + 4ull * (y * defaultCursorW_ + x);
+            const uint8_t v = (c == 'X') ? 0 : 0xFF;
+            px[0] = v; // B
+            px[1] = v; // G
+            px[2] = v; // R
+            px[3] = 0xFF;
+        }
+    }
+}
+
+void RdpSession::DrawCursor(uint8_t* dst, uint32_t dstStride, int32_t frameW, int32_t frameH)
+{
+    std::lock_guard<std::mutex> lock(cursorMutex_);
+    if (pointerHidden_)
+        return;
+    const uint8_t* src = nullptr;
+    uint32_t w = 0;
+    uint32_t h = 0;
+    uint32_t hotX = 0;
+    uint32_t hotY = 0;
+    if (pointer_ && pointer_->bgra) {
+        src = pointer_->bgra;
+        w = pointer_->base.width;
+        h = pointer_->base.height;
+        hotX = pointer_->base.xPos;
+        hotY = pointer_->base.yPos;
+    } else {
+        EnsureDefaultCursor();
+        src = defaultCursor_.data();
+        w = defaultCursorW_;
+        h = defaultCursorH_;
+    }
+    if (!src || w == 0 || h == 0)
+        return;
+    const int32_t originX = static_cast<int32_t>(cursorX_.load()) - static_cast<int32_t>(hotX);
+    const int32_t originY = static_cast<int32_t>(cursorY_.load()) - static_cast<int32_t>(hotY);
+    const rdpGdi* gdi = context_->gdi;
+    const uint32_t dstFormat = gdi ? gdi->dstFormat : PIXEL_FORMAT_RGBX32;
+    for (uint32_t sy = 0; sy < h; sy++) {
+        const int32_t dy = originY + static_cast<int32_t>(sy);
+        if (dy < 0 || dy >= frameH)
+            continue;
+        for (uint32_t sx = 0; sx < w; sx++) {
+            const int32_t dx = originX + static_cast<int32_t>(sx);
+            if (dx < 0 || dx >= frameW)
+                continue;
+            const uint8_t* sp = src + 4ull * (sy * w + sx);
+            const uint32_t a = sp[3];
+            if (a == 0)
+                continue;
+            uint8_t* dp = dst + static_cast<size_t>(dy) * dstStride + 4ull * dx;
+            uint8_t r = 0;
+            uint8_t g = 0;
+            uint8_t b = 0;
+            if (a == 0xFF) {
+                r = sp[2];
+                g = sp[1];
+                b = sp[0];
+            } else {
+                // 直通 alpha 混合（光标边缘抗锯齿像素）
+                uint8_t dr = 0;
+                uint8_t dg = 0;
+                uint8_t db = 0;
+                uint8_t da = 0;
+                FreeRDPSplitColor(FreeRDPReadColor(dp, dstFormat), dstFormat, &dr, &dg, &db, &da, nullptr);
+                r = static_cast<uint8_t>((sp[2] * a + dr * (255 - a)) / 255);
+                g = static_cast<uint8_t>((sp[1] * a + dg * (255 - a)) / 255);
+                b = static_cast<uint8_t>((sp[0] * a + db * (255 - a)) / 255);
+            }
+            FreeRDPWriteColor(dp, dstFormat, FreeRDPGetColor(dstFormat, r, g, b, 0xFF));
+        }
+    }
 }
 
 bool RdpSession::PresentFrame()
@@ -1039,6 +1319,10 @@ bool RdpSession::PresentFrame()
             memcpy(dst + static_cast<size_t>(y) * dstStride, src + static_cast<size_t>(y) * srcStride,
                    std::min(copyW, dstStride));
     }
+
+    // 触控板模式：把指针叠到输出缓冲上（不碰 gdi 的 primary_buffer，脏区逻辑不受影响）
+    if (cursorOverlay_.load())
+        DrawCursor(dst, dstStride, std::min<int32_t>(width, static_cast<int32_t>(dstStride / 4u)), copyH);
 
     munmap(mapped, handle->size);
 
