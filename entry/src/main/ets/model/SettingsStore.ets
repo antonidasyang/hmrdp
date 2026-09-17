@@ -4,6 +4,7 @@ import { KeyCode } from '@kit.InputKit';
 
 const PREF_NAME = 'hmrdp_settings';
 const KEY_DESKTOP_HOTKEY = 'desktop_hotkey';
+const KEY_PAN_TIP_SEEN = 'pan_tip_seen';
 
 /** 修饰键位掩码，与原生 setDesktopHotkey 的约定一致（不含 Win：鸿蒙优先抢占，且会话中要转发给远端） */
 export const MOD_CTRL = 1;
@@ -145,6 +146,17 @@ export class SettingsStore {
   static saveDesktopHotkey(context: common.Context, hk: DesktopHotkey): void {
     const p = SettingsStore.prefs(context);
     p.putSync(KEY_DESKTOP_HOTKEY, JSON.stringify(hk));
+    p.flush();
+  }
+
+  /** 「键盘挡住画面时可双指拖动」这条引导是否已经看过（只在首次弹键盘时提示一次） */
+  static isPanTipSeen(context: common.Context): boolean {
+    return SettingsStore.prefs(context).getSync(KEY_PAN_TIP_SEEN, false) as boolean;
+  }
+
+  static markPanTipSeen(context: common.Context): void {
+    const p = SettingsStore.prefs(context);
+    p.putSync(KEY_PAN_TIP_SEEN, true);
     p.flush();
   }
 }

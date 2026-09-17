@@ -182,6 +182,8 @@ export struct SessionPage {
   @State softKb: boolean = false;
   /** 打中文时的功能键横条是否折叠（折叠后只剩一个小把手，屏幕上只有系统键盘） */
   @State imeBarFolded: boolean = false;
+  /** 首次弹出键盘时的操作引导（双指拖动画面），看过一次就不再出现 */
+  @State showPanTip: boolean = false;
   private baseKbShift: number = 0;
   // 正在上推画面的手势用了几根手指（0 = 没有）。PanGesture 的 fingers 是「至少几指」，
   // 双指拖动会把单指 Pan 一起触发，靠这个只认一个手势的回调，免得两边互相抢
@@ -239,6 +241,12 @@ export struct SessionPage {
     this.viewScale = 1;
     this.offsetX = 0;
     this.offsetY = 0;
+  }
+
+  /** 工具条「复位」：缩放、平移、键盘上推量全部归零，画面回到 1:1 原始位置 */
+  private resetView(): void {
+    this.resetZoom();
+    this.kbShift = 0;
   }
 
   aboutToAppear(): void {
@@ -541,6 +549,15 @@ export struct SessionPage {
   }
 
   private onWindowEvent(type: window.WindowEventType): void {
+    if (!this.isPc) {
+      // 手机/平板：切出应用时系统会解除输入法绑定，本地状态跟着丢弃，
+      // 回来再点「中」才会走重新 attach 那条路
+      if (type === window.WindowEventType.WINDOW_HIDDEN) {
+        this.releaseKeyboard();
+        this.keyboardShown = false;
+      }
+      return;
+    }
     // 失焦/隐藏即释放键盘（用鼠标点其它窗口即可脱离）；重新聚焦且仍连接则恢复拦截
     if (type === window.WindowEventType.WINDOW_INACTIVE || type === window.WindowEventType.WINDOW_HIDDEN) {
       hmrdp.setKeyInterception(false);
@@ -789,6 +806,57 @@ export struct SessionPage {
     }
   }
 
+  /** 键盘第一次挡住画面时，告诉用户可以双指把画面推上来——这个手势没有任何视觉线索，
+   *  不说没人会去试。看过一次就记住，不再打扰 */
+  private maybeShowPanTip(): void {
+    if (this.showPanTip || this.isPc) {
+      return;
+    }
+    try {
+      if (SettingsStore.isPanTipSeen(this.ctx())) {
+        return;
+      }
+    } catch (e) {
+      return; // 读不到设置就别提示，免得每次都弹
+    }
+    this.showPanTip = true;
+  }
+
+  private dismissPanTip(): void {
+    this.showPanTip = false;
+    try {
+      SettingsStore.markPanTipSeen(this.ctx());
+    } catch (e) {
+    }
+  }
+
+  @Builder
+  panTip() {
+    Column({ space: 10 }) {
+      SymbolGlyph($r('sys.symbol.hand_point_up_tap_fill'))
+        .fontSize(34)
+        .fontColor(['#4DA3FF'])
+      Text('键盘挡住画面时')
+        .fontSize(16)
+        .fontColor(Color.White)
+        .fontWeight(FontWeight.Medium)
+      Text('用两根手指在屏幕上下拖动，就能把远端画面移上来看被挡住的部分。\n收起键盘后画面自动归位，也可以点工具条上的「复位」。')
+        .fontSize(13)
+        .fontColor('#CCFFFFFF')
+        .textAlign(TextAlign.Center)
+        .lineHeight(20)
+      Button('知道了')
+        .height(34)
+        .fontSize(14)
+        .onClick(() => { this.dismissPanTip(); })
+    }
+    .width(320)
+    .padding({ left: 20, right: 20, top: 18, bottom: 16 })
+    .backgroundColor('#F5242424')
+    .borderRadius(16)
+    .offset({ y: -72 }) // 上移，避开下半屏的键盘
+  }
+
   /** 键盘区高度变化后，把已上推的画面收回到新范围内（键盘收起则归位） */
   private clampShift(): void {
     const limit = this.panLimit();
@@ -843,6 +911,9 @@ export struct SessionPage {
     this.softKb = !this.softKb;
     this.stickyMods = 0;
     this.clampShift();
+    if (this.softKb) {
+      this.maybeShowPanTip();
+    }
   }
 
   /** 软键盘打出的字符：无修饰键时走 Unicode（中文/符号都靠它），
@@ -873,6 +944,7 @@ export struct SessionPage {
     try {
       this.kbWin = await window.getLastWindow(this.ctx());
       this.kbWin.on('keyboardHeightChange', this.kbHeightCb);
+      this.kbWin.on('windowEvent', this.winEventCb); // 切出应用时主动丢弃输入法绑定
     } catch (e) {
       const err = e as BusinessError;
       console.warn(`HMRDP 监听键盘高度失败: code=${err.code}`);
@@ -883,6 +955,7 @@ export struct SessionPage {
     if (this.kbWin) {
       try {
         this.kbWin.off('keyboardHeightChange', this.kbHeightCb);
+        this.kbWin.off('windowEvent', this.winEventCb);
       } catch (e) {
       }
       this.kbWin = undefined;
@@ -942,33 +1015,59 @@ export struct SessionPage {
     hmrdp.setGestureActive(false);
   }
 
-  private async showKeyboard(): Promise<void> {
+  /** 绑定输入法并挂上文字回调 */
+  private async attachIme(): Promise<void> {
     const controller = inputMethod.getController();
-    if (!this.imeAttached) {
-      await controller.attach(true, {
-        inputAttribute: {
-          textInputType: inputMethod.TextInputType.TEXT,
-          enterKeyType: inputMethod.EnterKeyType.UNSPECIFIED
-        }
-      });
-      controller.on('insertText', (text: string) => {
-        this.onInsertText(text);
-      });
-      controller.on('deleteLeft', (length: number) => {
-        for (let i = 0; i < length; i++) {
-          hmrdp.sendScancode(SC_BACKSPACE, false, true);
-          hmrdp.sendScancode(SC_BACKSPACE, false, false);
-        }
-      });
-      controller.on('sendFunctionKey', (functionKey: inputMethod.FunctionKey) => {
-        hmrdp.sendScancode(SC_ENTER, false, true);
-        hmrdp.sendScancode(SC_ENTER, false, false);
-      });
-      this.imeAttached = true;
-    } else {
-      await controller.showTextInput();
+    await controller.attach(true, {
+      inputAttribute: {
+        textInputType: inputMethod.TextInputType.TEXT,
+        enterKeyType: inputMethod.EnterKeyType.UNSPECIFIED
+      }
+    });
+    controller.on('insertText', (text: string) => {
+      this.onInsertText(text);
+    });
+    controller.on('deleteLeft', (length: number) => {
+      for (let i = 0; i < length; i++) {
+        hmrdp.sendScancode(SC_BACKSPACE, false, true);
+        hmrdp.sendScancode(SC_BACKSPACE, false, false);
+      }
+    });
+    controller.on('sendFunctionKey', (functionKey: inputMethod.FunctionKey) => {
+      hmrdp.sendScancode(SC_ENTER, false, true);
+      hmrdp.sendScancode(SC_ENTER, false, false);
+    });
+    this.imeAttached = true;
+  }
+
+  private async showKeyboard(): Promise<void> {
+    try {
+      if (this.imeAttached) {
+        await inputMethod.getController().showTextInput();
+      } else {
+        await this.attachIme();
+      }
+      this.keyboardShown = true;
+      this.maybeShowPanTip();
+      return;
+    } catch (e) {
+      const err = e as BusinessError;
+      console.warn(`HMRDP 唤起输入法失败: code=${err.code}，丢掉旧绑定重来`);
     }
-    this.keyboardShown = true;
+    // 切出应用再切回来后，系统已经解除了输入法绑定，而 imeAttached 还是 true，
+    // showTextInput 便会失败——此时紧凑键盘已经让位，用户面前一个键盘都没有
+    // （点「中」键盘就消失，正是这个）。丢掉旧绑定重新 attach 一次。
+    this.releaseKeyboard();
+    try {
+      await this.attachIme();
+      this.keyboardShown = true;
+      this.maybeShowPanTip();
+    } catch (e) {
+      const err = e as BusinessError;
+      console.warn(`HMRDP 重新绑定输入法仍失败: code=${err.code}`);
+      this.softKb = true; // 兜底：退回紧凑键盘，至少还能打字
+      promptAction.showToast({ message: '系统输入法暂不可用，已切回内置键盘' });
+    }
   }
 
   private async hideKeyboard(): Promise<void> {
@@ -981,12 +1080,16 @@ export struct SessionPage {
 
   private releaseKeyboard(): void {
     if (this.imeAttached) {
-      const controller = inputMethod.getController();
-      controller.off('insertText');
-      controller.off('deleteLeft');
-      controller.off('sendFunctionKey');
-      controller.detach((err) => {
-      });
+      // 绑定可能已被系统解除，各步都要容错，否则抛在半路会留下 imeAttached=true 的脏状态
+      try {
+        const controller = inputMethod.getController();
+        controller.off('insertText');
+        controller.off('deleteLeft');
+        controller.off('sendFunctionKey');
+        controller.detach((err) => {
+        });
+      } catch (e) {
+      }
       this.imeAttached = false;
     }
   }
@@ -1127,8 +1230,9 @@ export struct SessionPage {
                 this.resetZoom();
                 promptAction.showToast({ message: this.trackpadMode ? '触控板模式' : '直接触摸模式' });
               } })
+            // 复位 = 把双指缩放/平移、以及键盘挡住时上推的画面一并恢复原位
             ToolButton({ symbol: $r('sys.symbol.arrow_counterclockwise'), label: '复位', active: false,
-              action: () => { this.resetZoom(); } })
+              action: () => { this.resetView(); } })
           }
           // 系统键：所有设备都显示——PC 上物理 Win/系统组合键被鸿蒙拦截，只能靠它代发
           Column({ space: 2 }) {
@@ -1328,6 +1432,10 @@ export struct SessionPage {
 
         if (this.connected) {
           this.sessionToolbar()
+        }
+
+        if (this.connected && this.showPanTip) {
+          this.panTip()
         }
 
         if (!this.connected) {

@@ -177,7 +177,7 @@ const IME_KEYS: KeyDef[] = [
   ke('←', 0x4B), ke('↑', 0x48), ke('↓', 0x50), ke('→', 0x4D),
   ke('Home', 0x47), ke('End', 0x4F), ke('PgUp', 0x49), ke('PgDn', 0x51),
   kact('abc', ACT_ABC, 1),
-  kact('⌄', ACT_FOLD, 0.8)
+  kact('', ACT_FOLD, 0.9) // 空 label：渲染成 chevron 图标，见 ImeKeyBar
 ];
 
 @Component
@@ -253,30 +253,42 @@ export struct ImeKeyBar {
   build() {
     Column() {
       if (this.collapsed) {
-        Row() {
-          Text('⌃')
-            .fontSize(14)
+        Row({ space: 4 }) {
+          SymbolGlyph($r('sys.symbol.chevron_up'))
+            .fontSize(15)
+            .fontColor([Color.White])
+          Text('功能键')
+            .fontSize(11)
             .fontColor(Color.White)
         }
-        .width(58)
+        .width(92)
         .height(IME_HANDLE_H)
         .justifyContent(FlexAlign.Center)
         .backgroundColor('#F0181818')
+        .border({ width: 1, color: '#99FFFFFF' })
         .borderRadius({ topLeft: 8, topRight: 8 })
         .onClick(() => { this.onAction(ACT_FOLD); })
       } else {
         Row({ space: 3 }) {
           ForEach(IME_KEYS, (item: KeyDef) => {
             Row() {
-              Text(item.label)
-                .fontSize(item.label.length > 2 ? 11 : 15)
-                .fontColor(this.isActive(item) ? '#111111' : Color.White)
-                .maxLines(1)
+              if (item.act === ACT_FOLD) {
+                // 折叠键：给个正经图标 + 描边，不然没人看得出这里能点
+                SymbolGlyph($r('sys.symbol.chevron_down'))
+                  .fontSize(17)
+                  .fontColor([Color.White])
+              } else {
+                Text(item.label)
+                  .fontSize(item.label.length > 2 ? 11 : 15)
+                  .fontColor(this.isActive(item) ? '#111111' : Color.White)
+                  .maxLines(1)
+              }
             }
             .layoutWeight(item.weight)
             .height('100%')
             .justifyContent(FlexAlign.Center)
             .borderRadius(5)
+            .border({ width: item.act === ACT_FOLD ? 1 : 0, color: '#99FFFFFF' })
             .backgroundColor(this.isActive(item) ? '#4DA3FF'
               : (item.role === R_NORMAL ? '#40FFFFFF' : '#26FFFFFF'))
             .onClick(() => { this.tap(item); })
