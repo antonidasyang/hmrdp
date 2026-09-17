@@ -14,8 +14,10 @@ export const SOFT_KB_H = 156;
 /** 紧凑键盘右侧导航面板的尺寸（vp）：4 行 3 列 */
 export const NAV_PAD_H = 150;
 const NAV_PAD_W = 168;
-/** 打中文时那条功能键横条的高度（vp），2 行 */
-export const IME_BAR_H = 82;
+/** 打中文时那条功能键横条的高度（vp），单行 */
+export const IME_BAR_H = 38;
+/** 横条折叠后只剩的小把手高度（vp） */
+export const IME_HANDLE_H = 26;
 
 /** 修饰键位掩码，与 SessionPage 的 stickyMods 同一套（MOD_KEYS 下标） */
 const KMOD_CTRL = 1;
@@ -31,6 +33,7 @@ const R_ACT = 2;
 const ACT_LAYER = 1;       // 字母层 <-> 数字符号层
 export const ACT_IME = 2;  // 切到系统输入法（输中文）
 export const ACT_ABC = 3;  // 从系统输入法切回紧凑键盘
+export const ACT_FOLD = 4; // 折叠/展开功能键横条
 
 /** 双指拖动画面的阶段 */
 export const PAN_START = 0;
@@ -163,21 +166,19 @@ const NAV_ROWS: KeyDef[][] = [
   [k('Tab', 0x0F), ke('End', 0x4F), ke('PgDn', 0x51)]
 ];
 
-/** 打中文时的功能键横条：系统键盘已经占掉 222vp，再摞一个 4 行面板只剩 68vp 画面，
- *  而且挤在右侧还会把工具条顶到中间。改成贴着键盘上沿的 2 行 8 列，占满宽度、82vp 高，
- *  所有键一眼看全。「abc」切回紧凑键盘。 */
-const IME_ROW1: KeyDef[] = [
+/** 打中文时的功能键横条：单行排完，键窄一些但一眼看全。最右边两个是「abc」（切回紧凑
+ *  键盘）和折叠按钮——折叠后只剩一个小把手，屏幕上就只有系统中文键盘。 */
+const IME_KEYS: KeyDef[] = [
   kmod('Ctrl', KMOD_CTRL, 0x1D, false, 1),
   kmod('Alt', KMOD_ALT, 0x38, false, 1),
   kmod('Shift', KMOD_SHIFT, 0x2A, false, 1),
   kmod('Win', KMOD_WIN, 0x5B, true, 1),
-  ke('Esc', 0x01), k('Tab', 0x0F), ke('Del', 0x53), kact('abc', ACT_ABC, 1)
+  ke('Esc', 0x01), k('Tab', 0x0F), ke('Del', 0x53),
+  ke('←', 0x4B), ke('↑', 0x48), ke('↓', 0x50), ke('→', 0x4D),
+  ke('Home', 0x47), ke('End', 0x4F), ke('PgUp', 0x49), ke('PgDn', 0x51),
+  kact('abc', ACT_ABC, 1),
+  kact('⌄', ACT_FOLD, 0.8)
 ];
-const IME_ROW2: KeyDef[] = [
-  ke('Home', 0x47), ke('←', 0x4B), ke('↑', 0x48), ke('↓', 0x50),
-  ke('→', 0x4D), ke('End', 0x4F), ke('PgUp', 0x49), ke('PgDn', 0x51)
-];
-const IME_ROWS: KeyDef[][] = [IME_ROW1, IME_ROW2];
 
 @Component
 export struct NavPad {
@@ -227,6 +228,8 @@ export struct NavPad {
 @Component
 export struct ImeKeyBar {
   @Link stickyMods: number;
+  /** 折叠态：只留右下角一个小把手，屏幕上就剩系统中文键盘 */
+  @Prop collapsed: boolean = false;
   onKey: (code: number, ext: boolean, needShift: boolean) => void = () => {};
   onAction: (act: number) => void = () => {};
   onPan: (phase: number, dy: number) => void = () => {};
@@ -248,17 +251,29 @@ export struct ImeKeyBar {
   }
 
   build() {
-    Column({ space: 4 }) {
-      ForEach(IME_ROWS, (row: KeyDef[]) => {
-        Row({ space: 4 }) {
-          ForEach(row, (item: KeyDef) => {
+    Column() {
+      if (this.collapsed) {
+        Row() {
+          Text('⌃')
+            .fontSize(14)
+            .fontColor(Color.White)
+        }
+        .width(58)
+        .height(IME_HANDLE_H)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor('#F0181818')
+        .borderRadius({ topLeft: 8, topRight: 8 })
+        .onClick(() => { this.onAction(ACT_FOLD); })
+      } else {
+        Row({ space: 3 }) {
+          ForEach(IME_KEYS, (item: KeyDef) => {
             Row() {
               Text(item.label)
-                .fontSize(item.label.length > 2 ? 12 : 15)
+                .fontSize(item.label.length > 2 ? 11 : 15)
                 .fontColor(this.isActive(item) ? '#111111' : Color.White)
                 .maxLines(1)
             }
-            .layoutWeight(1)
+            .layoutWeight(item.weight)
             .height('100%')
             .justifyContent(FlexAlign.Center)
             .borderRadius(5)
@@ -269,13 +284,13 @@ export struct ImeKeyBar {
           }, (item: KeyDef) => `${item.label}${this.isActive(item) ? 1 : 0}`)
         }
         .width('100%')
-        .layoutWeight(1)
-      }, (row: KeyDef[], idx: number) => `i${idx}`)
+        .height(IME_BAR_H)
+        .padding({ left: 6, right: 6, top: 4, bottom: 4 })
+        .backgroundColor('#F0181818')
+      }
     }
     .width('100%')
-    .height(IME_BAR_H)
-    .padding({ left: 6, right: 6, top: 5, bottom: 5 })
-    .backgroundColor('#F0181818')
+    .alignItems(HorizontalAlign.End) // 折叠后的把手贴右边
     .gesture(
       PanGesture({ fingers: 2, direction: PanDirection.Vertical })
         .onActionStart(() => { this.onPan(PAN_START, 0); })

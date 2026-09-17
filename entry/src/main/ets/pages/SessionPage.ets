@@ -8,8 +8,8 @@ import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
 import { PCStore } from '../model/PCStore';
-import { SoftKeyboard, ImeKeyBar, SOFT_KB_H, IME_BAR_H, ACT_IME, ACT_ABC,
-  PAN_START, PAN_UPDATE } from '../components/SoftKeyboard';
+import { SoftKeyboard, ImeKeyBar, SOFT_KB_H, IME_BAR_H, IME_HANDLE_H, ACT_IME, ACT_ABC,
+  ACT_FOLD, PAN_START, PAN_UPDATE } from '../components/SoftKeyboard';
 import { isPcDevice, isLargeScreen, defaultScalePercent } from '../model/DeviceKit';
 import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
   MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
@@ -178,8 +178,10 @@ export struct SessionPage {
   /** 粘滞按下的修饰键（位掩码，见 MOD_KEYS 下标）；紧凑键盘与导航面板共用同一套 */
   @State stickyMods: number = 0;
   /** 会话自带的紧凑键盘（自绘）是否显示。打中文时让位给系统输入法，
-   *  但右侧导航面板（NavPad）会继续留在屏幕上 */
+   *  改由功能键横条（ImeKeyBar）顶上 */
   @State softKb: boolean = false;
+  /** 打中文时的功能键横条是否折叠（折叠后只剩一个小把手，屏幕上只有系统键盘） */
+  @State imeBarFolded: boolean = false;
   private baseKbShift: number = 0;
   // 正在上推画面的手势用了几根手指（0 = 没有）。PanGesture 的 fingers 是「至少几指」，
   // 双指拖动会把单指 Pan 一起触发，靠这个只认一个手势的回调，免得两边互相抢
@@ -739,7 +741,10 @@ export struct SessionPage {
     if (this.softKb) {
       return SOFT_KB_H;
     }
-    return this.kbHeight > 0 ? this.kbHeight + IME_BAR_H : 0;
+    if (this.kbHeight <= 0) {
+      return 0;
+    }
+    return this.kbHeight + (this.imeBarFolded ? IME_HANDLE_H : IME_BAR_H);
   }
 
   /** 工具条抬到键盘区上方。功能键横条只有 82vp，抬上去也不会顶出屏幕，
@@ -804,6 +809,9 @@ export struct SessionPage {
       // 从系统输入法切回紧凑键盘。先置位再收键盘，收起回调里按紧凑键盘的高度收画面
       this.softKb = true;
       this.hideKeyboard();
+    } else if (act === ACT_FOLD) {
+      this.imeBarFolded = !this.imeBarFolded;
+      this.clampShift();
     }
   }
 
@@ -1289,6 +1297,7 @@ export struct SessionPage {
           Column() {
             ImeKeyBar({
               stickyMods: $stickyMods,
+              collapsed: this.imeBarFolded,
               onKey: (code: number, ext: boolean, needShift: boolean) => {
                 this.sendWithMods(code, ext, needShift);
               },
@@ -1297,7 +1306,7 @@ export struct SessionPage {
             })
           }
           .width('100%')
-          .height(IME_BAR_H)
+          .height(this.imeBarFolded ? IME_HANDLE_H : IME_BAR_H)
           .position({ left: 0, bottom: this.kbHeight })
         }
 
