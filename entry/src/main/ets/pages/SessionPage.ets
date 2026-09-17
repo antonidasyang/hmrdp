@@ -8,6 +8,7 @@ import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
 import { PCStore } from '../model/PCStore';
+import { SoftKeyboard, SOFT_KB_H, ACT_IME, ACT_HIDE } from '../components/SoftKeyboard';
 import { isPcDevice, isLargeScreen, defaultScalePercent } from '../model/DeviceKit';
 import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
   MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
@@ -17,8 +18,8 @@ import { SessionAliveResponder } from '../model/SessionProbe';
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
 
-/** 软键盘上方功能键条的高度（vp）。软键盘没有 Esc/方向键/PgUp 这些，远程桌面离不开， */
-const KEY_BAR_H = 40;
+/** 功能键条高度（vp）。只在用系统输入法打中文时出现，紧凑键盘自带功能区不需要它 */
+const KEY_BAR_H = 34;
 
 /** 功能键：PS/2 set 1 扫描码 + 是否扩展键（E0 前缀） */
 interface FnKey {
@@ -38,6 +39,7 @@ interface ModKey {
 const FN_KEYS: FnKey[] = [
   { label: 'Esc', code: 0x01, ext: false },
   { label: 'Tab', code: 0x0F, ext: false },
+  { label: 'Del', code: 0x53, ext: true },
   { label: '←', code: 0x4B, ext: true },
   { label: '↑', code: 0x48, ext: true },
   { label: '↓', code: 0x50, ext: true },
@@ -47,7 +49,6 @@ const FN_KEYS: FnKey[] = [
   { label: 'PgUp', code: 0x49, ext: true },
   { label: 'PgDn', code: 0x51, ext: true },
   { label: 'Ins', code: 0x52, ext: true },
-  { label: 'Del', code: 0x53, ext: true },
   { label: 'F1', code: 0x3B, ext: false },
   { label: 'F2', code: 0x3C, ext: false },
   { label: 'F3', code: 0x3D, ext: false },
@@ -61,6 +62,9 @@ const FN_KEYS: FnKey[] = [
   { label: 'F11', code: 0x57, ext: false },
   { label: 'F12', code: 0x58, ext: false }
 ];
+
+/** stickyMods 里 Shift 的位（MOD_KEYS 下标 2） */
+const MOD_SHIFT_BIT = 4;
 
 const MOD_KEYS: ModKey[] = [
   { label: 'Ctrl', code: 0x1D, ext: false },
@@ -89,12 +93,12 @@ struct KeyCap {
   build() {
     Row() {
       Text(this.label)
-        .fontSize(13)
+        .fontSize(12)
         .fontColor(this.active ? '#111111' : Color.White)
     }
-    .constraintSize({ minWidth: 40 })
-    .height(30)
-    .padding({ left: 9, right: 9 })
+    .constraintSize({ minWidth: 36 })
+    .height(26)
+    .padding({ left: 8, right: 8 })
     .justifyContent(FlexAlign.Center)
     .borderRadius(6)
     .backgroundColor(this.active ? '#4DA3FF' : '#33FFFFFF')
@@ -231,8 +235,10 @@ export struct SessionPage {
   // 像 Windows App 那样拖一下就能看到被键盘挡住的内容。kbHeight 为 vp，0 = 键盘未弹出
   @State kbHeight: number = 0;
   @State kbShift: number = 0;
-  /** 功能键条上粘滞按下的修饰键（位掩码，见 MOD_KEYS 下标） */
+  /** 粘滞按下的修饰键（位掩码，见 MOD_KEYS 下标）；紧凑键盘与功能键条共用同一套 */
   @State stickyMods: number = 0;
+  /** 会话自带的紧凑键盘（自绘）是否显示。与系统输入法互斥：打中文时切到后者 */
+  @State softKb: boolean = false;
   private baseKbShift: number = 0;
   // 正在上推画面的手势用了几根手指（0 = 没有）。PanGesture 的 fingers 是「至少几指」，
   // 双指拖动会把单指 Pan 一起触发，靠这个只认一个手势的回调，免得两边互相抢
@@ -787,8 +793,11 @@ export struct SessionPage {
 
   // ---- 软键盘上方的功能键条（软键盘没有 Esc/方向键/Home/PgUp/F 区，远程桌面离不开）----
 
-  /** 键盘遮挡区总高 = 软键盘 + 功能键条；画面最多上推这么多 */
+  /** 底部键盘区总高；画面最多上推这么多 */
   private panLimit(): number {
+    if (this.softKb) {
+      return SOFT_KB_H;
+    }
     return this.kbHeight > 0 ? this.kbHeight + KEY_BAR_H : 0;
   }
 
@@ -805,19 +814,60 @@ export struct SessionPage {
 
   /** 带上粘滞修饰键发一个键（按下、抬起，修饰键逆序松开），随后清空修饰键——
    *  粘滞只作用于下一个键，和手机输入法的 Shift 一个语义 */
-  private sendWithMods(code: number, ext: boolean): void {
+  private sendWithMods(code: number, ext: boolean, needShift: boolean = false): void {
     const mods = this.activeMods();
+    // needShift：{ } | ~ _ + 这类键本身就是 Shift 变体，粘滞里没按 Shift 时临时补一个
+    const extraShift = needShift && (this.stickyMods & MOD_SHIFT_BIT) === 0;
     for (const m of mods) {
       hmrdp.sendScancode(m.code, m.ext, true);
     }
+    if (extraShift) {
+      hmrdp.sendScancode(0x2A, false, true);
+    }
     hmrdp.sendScancode(code, ext, true);
     hmrdp.sendScancode(code, ext, false);
+    if (extraShift) {
+      hmrdp.sendScancode(0x2A, false, false);
+    }
     for (let i = mods.length - 1; i >= 0; i--) {
       hmrdp.sendScancode(mods[i].code, mods[i].ext, false);
     }
     if (this.stickyMods !== 0) {
-      this.stickyMods = 0;
+      this.stickyMods = 0; // 粘滞只作用于下一个键
     }
+  }
+
+  /** 键盘区高度变化后，把已上推的画面收回到新范围内（键盘收起则归位） */
+  private clampShift(): void {
+    const limit = this.panLimit();
+    if (this.kbShift > limit) {
+      this.kbShift = limit;
+    }
+  }
+
+  /** 紧凑键盘的动作键 */
+  private onSoftAction(act: number): void {
+    if (act === ACT_IME) {
+      this.softKb = false; // 打中文：让位给系统输入法（它带候选词，自绘的替代不了）
+      this.clampShift();
+      this.showKeyboard();
+    } else if (act === ACT_HIDE) {
+      this.softKb = false;
+      this.clampShift();
+    }
+  }
+
+  /** 工具条「键盘」：在紧凑键盘 / 收起之间切换；系统输入法开着时先收它 */
+  private toggleKeyboard(): void {
+    if (this.keyboardShown) {
+      this.hideKeyboard();
+      this.softKb = false;
+      this.clampShift();
+      return;
+    }
+    this.softKb = !this.softKb;
+    this.stickyMods = 0;
+    this.clampShift();
   }
 
   /** 软键盘打出的字符：无修饰键时走 Unicode（中文/符号都靠它），
@@ -917,7 +967,7 @@ export struct SessionPage {
    *  不用单指——单指在触控板模式是移指针、在直接触摸模式是点击/拖拽，两种模式的核心操作都被占；
    *  而且常驻一个单指竖向 PanGesture 会打乱原生 XComponent 的触摸投递（触控板指针上下走发跳）。 */
   private kbPanAllowed(fingers: number): boolean {
-    if (this.kbHeight <= 0 || this.isPc) {
+    if (this.panLimit() <= 0 || this.isPc) {
       return false;
     }
     return fingers === 2;
@@ -1123,14 +1173,9 @@ export struct SessionPage {
           }
           // PC/2in1 有物理键鼠，隐藏触摸相关的软件控制（键盘/触控板/复位）
           if (!this.isPc) {
-            ToolButton({ symbol: $r('sys.symbol.keyboard'), label: '键盘', active: this.keyboardShown,
-              action: () => {
-                if (this.keyboardShown) {
-                  this.hideKeyboard();
-                } else {
-                  this.showKeyboard();
-                }
-              } })
+            ToolButton({ symbol: $r('sys.symbol.keyboard'), label: '键盘',
+              active: this.softKb || this.keyboardShown,
+              action: () => { this.toggleKeyboard(); } })
             ToolButton({ symbol: $r('sys.symbol.hand_point_up_tap_fill'),
               label: this.trackpadMode ? '触控板' : '直接触摸', active: this.trackpadMode,
               action: () => {
@@ -1187,8 +1232,8 @@ export struct SessionPage {
     .backgroundColor('#B3000000')
     .borderRadius(24)
     .padding(4)
-    // 键盘弹出时抬到软键盘+功能键条上方，别被盖住
-    .position({ right: 12, bottom: 40 + (this.kbHeight > 0 ? this.kbHeight + KEY_BAR_H : 0) })
+    // 抬到键盘区上方，别被盖住
+    .position({ right: 12, bottom: 40 + this.panLimit() })
   }
 
   build() {
@@ -1301,8 +1346,19 @@ export struct SessionPage {
             }
           })
 
-        if (this.connected && this.kbHeight > 0) {
+        if (this.connected && this.kbHeight > 0 && !this.softKb) {
           this.keyBar()
+        }
+
+        if (this.connected && this.softKb) {
+          SoftKeyboard({
+            stickyMods: $stickyMods,
+            onKey: (code: number, ext: boolean, needShift: boolean) => {
+              this.sendWithMods(code, ext, needShift);
+            },
+            onAction: (act: number) => { this.onSoftAction(act); }
+          })
+            .position({ left: 0, bottom: 0 })
         }
 
         if (this.connected) {
@@ -1388,6 +1444,7 @@ export struct SessionPage {
         } catch (e) {
         }
       }
+      this.softKb = false;
       this.aliveResponder.stop();
       this.teardownClipboard();
       this.teardownKeyInterception();
