@@ -6,13 +6,16 @@
 // 「键矮、字母区靠左、右侧空出来的地方放 Esc/方向键/PgUp 这些功能键」。
 //
 // 所有键一律走扫描码（不是 Unicode），所以 Ctrl+C / Shift+方向键这类组合天然可用；
-// 中文输入交给系统输入法，此时左侧字母区让位，右侧导航面板（NavPad）继续留在屏幕上，
-// 面板上的「abc」键一键切回紧凑键盘。
+// 中文输入交给系统输入法，此时整个紧凑键盘让位，改由 ImeKeyBar（贴在系统键盘上沿的
+// 2 行功能键横条）顶上，横条里的「abc」键一键切回紧凑键盘。
 
 /** 紧凑键盘总高（vp）。系统键盘 222vp，这里 156vp */
 export const SOFT_KB_H = 156;
-/** 导航面板高度（vp），4 行 */
+/** 紧凑键盘右侧导航面板的尺寸（vp）：4 行 3 列 */
 export const NAV_PAD_H = 150;
+const NAV_PAD_W = 168;
+/** 打中文时那条功能键横条的高度（vp），2 行 */
+export const IME_BAR_H = 82;
 
 /** 修饰键位掩码，与 SessionPage 的 stickyMods 同一套（MOD_KEYS 下标） */
 const KMOD_CTRL = 1;
@@ -160,37 +163,72 @@ const NAV_ROWS: KeyDef[][] = [
   [k('Tab', 0x0F), ke('End', 0x4F), ke('PgDn', 0x51)]
 ];
 
-/** 打中文时用的一份：Ins 换成「abc」，否则从系统输入法回不到紧凑键盘 */
-const NAV_ROWS_IME: KeyDef[][] = [
-  [ke('Esc', 0x01), ke('Del', 0x53), kact('abc', ACT_ABC, 1)],
-  [ke('Home', 0x47), ke('↑', 0x48), ke('PgUp', 0x49)],
-  [ke('←', 0x4B), ke('↓', 0x50), ke('→', 0x4D)],
-  [k('Tab', 0x0F), ke('End', 0x4F), ke('PgDn', 0x51)]
-];
-
-/** 独立使用（打中文时）才需要的修饰键列——紧凑键盘自己的底行已经有它们了 */
-const MOD_COL: KeyDef[] = [
+/** 打中文时的功能键横条：系统键盘已经占掉 222vp，再摞一个 4 行面板只剩 68vp 画面，
+ *  而且挤在右侧还会把工具条顶到中间。改成贴着键盘上沿的 2 行 8 列，占满宽度、82vp 高，
+ *  所有键一眼看全。「abc」切回紧凑键盘。 */
+const IME_ROW1: KeyDef[] = [
   kmod('Ctrl', KMOD_CTRL, 0x1D, false, 1),
   kmod('Alt', KMOD_ALT, 0x38, false, 1),
-  K_SHIFT,
-  kmod('Win', KMOD_WIN, 0x5B, true, 1)
+  kmod('Shift', KMOD_SHIFT, 0x2A, false, 1),
+  kmod('Win', KMOD_WIN, 0x5B, true, 1),
+  ke('Esc', 0x01), k('Tab', 0x0F), ke('Del', 0x53), kact('abc', ACT_ABC, 1)
 ];
-
-/** 导航面板宽度：带修饰键列时 4 列，否则 3 列 */
-export function navPadWidth(withMods: boolean): number {
-  return withMods ? 222 : 168;
-}
+const IME_ROW2: KeyDef[] = [
+  ke('Home', 0x47), ke('←', 0x4B), ke('↑', 0x48), ke('↓', 0x50),
+  ke('→', 0x4D), ke('End', 0x4F), ke('PgUp', 0x49), ke('PgDn', 0x51)
+];
+const IME_ROWS: KeyDef[][] = [IME_ROW1, IME_ROW2];
 
 @Component
 export struct NavPad {
-  @Link stickyMods: number;
-  /** 最左边补一列 Ctrl/Alt/Shift/Win，并把 Ins 换成 abc（脱离紧凑键盘单独用时） */
-  @Prop withMods: boolean = false;
-  /** 面板高度；放进紧凑键盘时由外部给出可用高度 */
+  /** 面板高度；由紧凑键盘给出可用高度 */
   @Prop padHeight: number = NAV_PAD_H;
   onKey: (code: number, ext: boolean, needShift: boolean) => void = () => {};
-  onAction: (act: number) => void = () => {};
   /** 双指竖拖：面板压着画面，手指落在这上面也得能把画面推上去 */
+  onPan: (phase: number, dy: number) => void = () => {};
+
+  build() {
+    Column({ space: 4 }) {
+      ForEach(NAV_ROWS, (row: KeyDef[]) => {
+        Row({ space: 4 }) {
+          ForEach(row, (item: KeyDef) => {
+            Row() {
+              Text(item.label)
+                .fontSize(item.label.length > 2 ? 11 : 15)
+                .fontColor(Color.White)
+                .maxLines(1)
+            }
+            .layoutWeight(1)
+            .height('100%')
+            .justifyContent(FlexAlign.Center)
+            .borderRadius(5)
+            .backgroundColor('#40FFFFFF')
+            .onClick(() => { this.onKey(item.code, item.ext, item.needShift); })
+          }, (item: KeyDef) => item.label)
+        }
+        .width('100%')
+        .layoutWeight(1)
+      }, (row: KeyDef[], idx: number) => `n${idx}`)
+    }
+    .width(NAV_PAD_W)
+    .height(this.padHeight)
+    .gesture(
+      PanGesture({ fingers: 2, direction: PanDirection.Vertical })
+        .onActionStart(() => { this.onPan(PAN_START, 0); })
+        .onActionUpdate((e: GestureEvent) => { this.onPan(PAN_UPDATE, e.offsetY as number); })
+        .onActionEnd(() => { this.onPan(PAN_END, 0); })
+        .onActionCancel(() => { this.onPan(PAN_END, 0); })
+    )
+  }
+}
+
+/** 打中文时贴在系统键盘上沿的功能键横条。必须自带不透明底板——键帽是半透明白，
+ *  直接浮在亮色的远端画面上几乎看不见（只有把画面推上去露出黑边才显形）。 */
+@Component
+export struct ImeKeyBar {
+  @Link stickyMods: number;
+  onKey: (code: number, ext: boolean, needShift: boolean) => void = () => {};
+  onAction: (act: number) => void = () => {};
   onPan: (phase: number, dy: number) => void = () => {};
 
   private isActive(key: KeyDef): boolean {
@@ -210,55 +248,34 @@ export struct NavPad {
   }
 
   build() {
-    Row({ space: 4 }) {
-      if (this.withMods) {
-        Column({ space: 4 }) {
-          ForEach(MOD_COL, (item: KeyDef) => {
+    Column({ space: 4 }) {
+      ForEach(IME_ROWS, (row: KeyDef[]) => {
+        Row({ space: 4 }) {
+          ForEach(row, (item: KeyDef) => {
             Row() {
               Text(item.label)
-                .fontSize(item.label.length > 2 ? 11 : 15)
+                .fontSize(item.label.length > 2 ? 12 : 15)
                 .fontColor(this.isActive(item) ? '#111111' : Color.White)
                 .maxLines(1)
             }
-            .width('100%')
             .layoutWeight(1)
+            .height('100%')
             .justifyContent(FlexAlign.Center)
             .borderRadius(5)
-            .backgroundColor(this.isActive(item) ? '#4DA3FF' : '#26FFFFFF')
+            .backgroundColor(this.isActive(item) ? '#4DA3FF'
+              : (item.role === R_NORMAL ? '#40FFFFFF' : '#26FFFFFF'))
             .onClick(() => { this.tap(item); })
-            // key 带上点亮态：同 key 的项不会重新执行 itemGenerator，点了不会变色
+            // key 带上点亮态，修饰键点了才会变色
           }, (item: KeyDef) => `${item.label}${this.isActive(item) ? 1 : 0}`)
         }
-        .width(50)
-        .height('100%')
-      }
-      Column({ space: 4 }) {
-        ForEach(this.withMods ? NAV_ROWS_IME : NAV_ROWS, (row: KeyDef[]) => {
-          Row({ space: 4 }) {
-            ForEach(row, (item: KeyDef) => {
-              Row() {
-                Text(item.label)
-                  .fontSize(item.label.length > 2 ? 11 : 15)
-                  .fontColor(Color.White)
-                  .maxLines(1)
-              }
-              .layoutWeight(1)
-              .height('100%')
-              .justifyContent(FlexAlign.Center)
-              .borderRadius(5)
-              .backgroundColor(item.role === R_ACT ? '#26FFFFFF' : '#40FFFFFF')
-              .onClick(() => { this.tap(item); })
-            }, (item: KeyDef) => item.label)
-          }
-          .width('100%')
-          .layoutWeight(1)
-        }, (row: KeyDef[], idx: number) => `${this.withMods ? 'm' : 'n'}${idx}`)
-      }
-      .layoutWeight(1)
-      .height('100%')
+        .width('100%')
+        .layoutWeight(1)
+      }, (row: KeyDef[], idx: number) => `i${idx}`)
     }
-    .width(navPadWidth(this.withMods))
-    .height(this.padHeight)
+    .width('100%')
+    .height(IME_BAR_H)
+    .padding({ left: 6, right: 6, top: 5, bottom: 5 })
+    .backgroundColor('#F0181818')
     .gesture(
       PanGesture({ fingers: 2, direction: PanDirection.Vertical })
         .onActionStart(() => { this.onPan(PAN_START, 0); })
@@ -349,11 +366,8 @@ export struct SoftKeyboard {
       .height('100%')
 
       NavPad({
-        stickyMods: $stickyMods,
-        withMods: false,
         padHeight: SOFT_KB_H - 10,
         onKey: this.onKey,
-        onAction: this.onAction,
         onPan: this.onPan
       })
     }

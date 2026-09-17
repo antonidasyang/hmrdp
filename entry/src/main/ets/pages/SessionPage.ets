@@ -8,7 +8,7 @@ import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
 import { PCStore } from '../model/PCStore';
-import { SoftKeyboard, NavPad, navPadWidth, SOFT_KB_H, NAV_PAD_H, ACT_IME, ACT_ABC,
+import { SoftKeyboard, ImeKeyBar, SOFT_KB_H, IME_BAR_H, ACT_IME, ACT_ABC,
   PAN_START, PAN_UPDATE } from '../components/SoftKeyboard';
 import { isPcDevice, isLargeScreen, defaultScalePercent } from '../model/DeviceKit';
 import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
@@ -739,20 +739,13 @@ export struct SessionPage {
     if (this.softKb) {
       return SOFT_KB_H;
     }
-    return this.kbHeight > 0 ? this.kbHeight + NAV_PAD_H : 0;
+    return this.kbHeight > 0 ? this.kbHeight + IME_BAR_H : 0;
   }
 
-  /** 工具条位置：躲开键盘区。系统输入法态下导航面板只占右侧一条，
-   *  把工具条左移让开它即可，不必抬到面板上方（那会顶出屏幕） */
+  /** 工具条抬到键盘区上方。功能键横条只有 82vp，抬上去也不会顶出屏幕，
+   *  工具条就不用像之前那样为了躲开右侧面板而横向挪位了 */
   private toolbarBottom(): number {
-    if (this.softKb) {
-      return 40 + SOFT_KB_H;
-    }
-    return this.kbHeight > 0 ? 40 + this.kbHeight : 40;
-  }
-
-  private toolbarRight(): number {
-    return (!this.softKb && this.kbHeight > 0) ? 20 + navPadWidth(true) : 12;
+    return 40 + this.panLimit();
   }
 
   /** 当前粘滞按下的修饰键 */
@@ -1174,7 +1167,7 @@ export struct SessionPage {
     .borderRadius(24)
     .padding(4)
     // 抬到键盘区上方，别被盖住
-    .position({ right: this.toolbarRight(), bottom: this.toolbarBottom() })
+    .position({ right: 12, bottom: this.toolbarBottom() })
   }
 
   build() {
@@ -1289,14 +1282,13 @@ export struct SessionPage {
 
         // 打中文时左侧字母区让位给系统输入法，右侧导航面板留在屏幕上继续用，
         // 并补一列 Ctrl/Alt/Shift/Win（紧凑键盘那列在左侧底行，这里没有了）
+        // 打中文：功能键横条贴在系统键盘上沿，占满宽度。
+        // 包一层原生容器再定位：position 这类布局属性直接挂在自定义组件上会落到它的
+        // 包装节点，位置容易跑偏
         if (this.connected && this.kbHeight > 0 && !this.softKb) {
-          // 包一层原生容器再定位：position 之类的布局属性直接挂在自定义组件上，
-          // 会落到它的包装节点上，面板要么错位要么干脆看不见
           Column() {
-            NavPad({
+            ImeKeyBar({
               stickyMods: $stickyMods,
-              withMods: true,
-              padHeight: NAV_PAD_H,
               onKey: (code: number, ext: boolean, needShift: boolean) => {
                 this.sendWithMods(code, ext, needShift);
               },
@@ -1304,9 +1296,9 @@ export struct SessionPage {
               onPan: (phase: number, dy: number) => { this.onPanelPan(phase, dy); }
             })
           }
-          .width(navPadWidth(true))
-          .height(NAV_PAD_H)
-          .position({ right: 8, bottom: this.kbHeight })
+          .width('100%')
+          .height(IME_BAR_H)
+          .position({ left: 0, bottom: this.kbHeight })
         }
 
         if (this.connected && this.softKb) {
