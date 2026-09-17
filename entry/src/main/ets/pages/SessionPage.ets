@@ -854,16 +854,15 @@ export struct SessionPage {
 
     // 一、先把工具条按钮逐个讲一遍
     steps.push(tstep('keyboard', $r('sys.symbol.keyboard'), '键盘',
-      '调出内置的紧凑键盘，带 Esc、方向键、Home/End、PgUp/PgDn 这些远程桌面离不开、'
-      + '手机键盘又没有的键。'));
+      '调出内置的紧凑键盘，带 Esc、方向键、Home/End、PgUp/PgDn 这些手机键盘没有的键。'));
     steps.push(tstep('touch', $r('sys.symbol.hand_point_up_tap_fill'), '直接触摸 / 触控板',
-      '直接触摸：点屏幕哪里就点远端哪里，像用触屏电脑。\n'
-      + '触控板：把屏幕当笔记本触控板，滑动移动鼠标指针、轻点是左键、双指轻点是右键，'
-      + '要精确点小按钮时用它。选了哪种会按这台电脑记住。'));
+      '直接触摸：点哪儿就点远端哪儿。\n'
+      + '触控板：屏幕当触控板用，滑动移指针、轻点左键、双指轻点右键，适合点小按钮。\n'
+      + '选哪种会按这台电脑记住。'));
     steps.push(tstep('reset', $r('sys.symbol.arrow_counterclockwise'), '复位',
       '画面被放大、拖动过，或者被键盘顶上去之后，一键回到 1:1 的原始位置。'));
     steps.push(tstep('syskeys', $r('sys.symbol.gearshape'), '系统键',
-      '发送手机键盘敲不出来的组合键：Win、Win+D、Win+E、Ctrl+Alt+Del、Alt+Tab 等。'));
+      '发送手机键盘敲不出来的组合键：Win、Win+D、Ctrl+Alt+Del、Alt+Tab 等。'));
     steps.push(tstep('fullscreen', $r('sys.symbol.arrow_up_left_and_arrow_down_right'), '全屏',
       '隐藏状态栏和导航栏，让远端画面占满整个屏幕。'));
     steps.push(tstep('disconnect', $r('sys.symbol.xmark'), '断开',
@@ -877,22 +876,18 @@ export struct SessionPage {
 
     // 三、键盘出来了，讲手势和键盘本身
     steps.push(tstep('', $r('sys.symbol.hand_point_up_tap_fill'), '放大和移动画面',
-      '两根手指张合 = 放大 / 缩小画面。\n'
-      + '两根手指上下拖动 = 把画面移上来，看键盘挡住的部分（手指落在键盘上拖也行）。\n'
-      + '看完点工具条的「复位」就能还原。'));
+      '双指张合 = 放大 / 缩小。\n'
+      + '双指上下拖 = 移动画面，看键盘挡住的部分（手指落在键盘上拖也行）。\n'
+      + '点工具条的「复位」还原。'));
     steps.push(tstep('', $r('sys.symbol.keyboard'), '键盘上有什么',
-      '左下角「?123」切数字和符号层。\n'
-      + '右边一块是 Esc、方向键、Home/End、PgUp/PgDn、Del。\n'
-      + 'Ctrl / Alt / Shift / Win 是粘滞键：点一下亮起，跟着按下一个键一起发出去，'
-      + '所以 Ctrl+C、Ctrl+V 这些直接能用。'));
+      '「?123」切数字符号层；右侧是 Esc、方向键、Home/End、PgUp/PgDn。\n'
+      + 'Ctrl / Shift 等点亮后与下一个键一起发出，Ctrl+C 直接可用。'));
     steps.push(tstep('', $r('sys.symbol.keyboard'), '打中文',
-      '点键盘底排的「中」，切到系统输入法打中文。\n'
-      + '这时系统键盘上方会多出一条功能键横条，Esc、方向键、Home/End、Del 和几个修饰键'
-      + '都还在那儿，不用来回切。'));
-    steps.push(tstep('', $r('sys.symbol.chevron_down'), '收起横条 / 切回内置键盘',
-      '嫌横条占地方：点它最右边的 ⌄ 折叠，屏幕上就只剩系统键盘；'
-      + '折叠后右下角会留一个「功能键」小把手，点它再展开。\n'
-      + '横条上的「abc」则是切回内置的紧凑键盘。'));
+      '点键盘底排的「中」，切到系统输入法。\n'
+      + '系统键盘上方会出现功能键横条，Esc、方向键、Del 都还在。'));
+    steps.push(tstep('', $r('sys.symbol.chevron_down'), '收起横条 / 回内置键盘',
+      '横条最右的 ⌄ 折叠它，只留系统键盘；折叠后右下角有「功能键」把手可再展开。\n'
+      + '横条上的「abc」切回内置键盘。'));
     return steps;
   }
 
@@ -950,38 +945,50 @@ export struct SessionPage {
     }
   }
 
+  /** 卡片最大高度：键盘占掉下半屏后剩多少就只能用多少，超了会被屏幕裁掉 */
+  private tourMaxH(): number {
+    const h = this.viewH > 0 ? this.viewH : 440;
+    return Math.max(140, h - this.panLimit() - 44);
+  }
+
   @Builder
   toolbarTour() {
-    Column({ space: 10 }) {
+    Column({ space: 8 }) {
       Row({ space: 10 }) {
         SymbolGlyph(this.tourList[this.tourStep].symbol)
-          .fontSize(24)
+          .fontSize(22)
           .fontColor(['#4DA3FF'])
         Text(this.tourList[this.tourStep].title)
-          .fontSize(17)
+          .fontSize(16)
           .fontColor(Color.White)
           .fontWeight(FontWeight.Medium)
       }
       .width('100%')
-      Text(this.tourList[this.tourStep].desc)
-        .fontSize(13)
-        .fontColor('#CCFFFFFF')
-        .lineHeight(20)
-        .width('100%')
+      // 正文兜底可滚动：文案已按 3 行以内写，万一某步偏长也不会顶掉下面的按钮
+      Scroll() {
+        Text(this.tourList[this.tourStep].desc)
+          .fontSize(13)
+          .fontColor('#CCFFFFFF')
+          .lineHeight(19)
+          .width('100%')
+      }
+      .align(Alignment.TopStart)
+      .scrollBar(BarState.Off)
+      .constraintSize({ maxHeight: Math.max(60, this.tourMaxH() - 94) })
       Row({ space: 8 }) {
         Text(`${this.tourStep + 1} / ${this.tourList.length}`)
           .fontSize(12)
           .fontColor('#99FFFFFF')
         Blank()
         Button('跳过')
-          .height(32)
+          .height(30)
           .fontSize(13)
           .backgroundColor('#33FFFFFF')
           .fontColor('#CCFFFFFF')
           .onClick(() => { this.finishTour(); })
         if (!this.tourList[this.tourStep].waitTap) {
           Button(this.tourStep + 1 >= this.tourList.length ? '完成' : '下一步')
-            .height(32)
+            .height(30)
             .fontSize(13)
             .onClick(() => { this.tourNext(); })
         }
@@ -990,11 +997,13 @@ export struct SessionPage {
     }
     .width(330)
     .alignItems(HorizontalAlign.Start)
-    .padding({ left: 18, right: 18, top: 16, bottom: 14 })
+    .constraintSize({ maxWidth: '92%', maxHeight: this.tourMaxH() })
+    .padding({ left: 16, right: 16, top: 14, bottom: 12 })
     .backgroundColor('#F5242424')
     .borderRadius(16)
-    // 贴在工具条正上方：工具条会随键盘抬高，卡片跟着走，始终挨着被讲解的按钮
-    .position({ right: 12, bottom: 104 + this.panLimit() })
+    // 贴顶而不是贴工具条：键盘一弹就占掉大半屏，按 bottom 定位的卡片会向上溢出被裁掉
+    // （被讲解的按钮有蓝框高亮，不靠卡片贴着也找得到）
+    .position({ right: 12, top: 30 })
   }
 
   /** 键盘第一次挡住画面时，告诉用户可以双指把画面推上来——这个手势没有任何视觉线索，
@@ -1023,29 +1032,31 @@ export struct SessionPage {
 
   @Builder
   panTip() {
-    Column({ space: 10 }) {
+    Column({ space: 8 }) {
       SymbolGlyph($r('sys.symbol.hand_point_up_tap_fill'))
-        .fontSize(34)
+        .fontSize(26)
         .fontColor(['#4DA3FF'])
       Text('键盘挡住画面时')
         .fontSize(16)
         .fontColor(Color.White)
         .fontWeight(FontWeight.Medium)
-      Text('用两根手指在屏幕上下拖动，就能把远端画面移上来看被挡住的部分。\n收起键盘后画面自动归位，也可以点工具条上的「复位」。')
+      Text('用两根手指在屏幕上下拖动，把远端画面移上来看被挡住的部分。\n收起键盘后自动归位，也可以点工具条的「复位」。')
         .fontSize(13)
         .fontColor('#CCFFFFFF')
         .textAlign(TextAlign.Center)
-        .lineHeight(20)
+        .lineHeight(19)
       Button('知道了')
         .height(34)
         .fontSize(14)
         .onClick(() => { this.dismissPanTip(); })
     }
     .width(320)
-    .padding({ left: 20, right: 20, top: 18, bottom: 16 })
+    .constraintSize({ maxWidth: '92%', maxHeight: this.tourMaxH() })
+    .padding({ left: 18, right: 18, top: 16, bottom: 14 })
     .backgroundColor('#F5242424')
     .borderRadius(16)
-    .offset({ y: -72 }) // 上移，避开下半屏的键盘
+    // 与引导卡片一致贴顶：键盘占掉下半屏后，居中的卡片会被压得露不全
+    .position({ right: 12, top: 30 })
   }
 
   /** 键盘区高度变化后，把已上推的画面收回到新范围内（键盘收起则归位） */
