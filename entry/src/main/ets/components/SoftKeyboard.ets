@@ -6,7 +6,8 @@
 // 「键矮、字母区靠左、右侧空出来的地方放 Esc/方向键/PgUp 这些功能键」。
 //
 // 所有键一律走扫描码（不是 Unicode），所以 Ctrl+C / Shift+方向键这类组合天然可用；
-// 中文输入交给系统输入法，此时左侧字母区让位，右侧导航面板（NavPad）继续留在屏幕上。
+// 中文输入交给系统输入法，此时左侧字母区让位，右侧导航面板（NavPad）继续留在屏幕上，
+// 面板上的「abc」键一键切回紧凑键盘。
 
 /** 紧凑键盘总高（vp）。系统键盘 222vp，这里 156vp */
 export const SOFT_KB_H = 156;
@@ -24,10 +25,14 @@ const R_MOD = 1;
 const R_ACT = 2;
 
 /** 键盘自身的动作，不发给远端 */
-const ACT_LAYER = 1; // 字母层 <-> 数字符号层
-const ACT_FN = 2;    // 右侧导航区 <-> F1-F12
-export const ACT_IME = 3;  // 切到系统输入法（输中文）
-export const ACT_HIDE = 4; // 收起键盘
+const ACT_LAYER = 1;       // 字母层 <-> 数字符号层
+export const ACT_IME = 2;  // 切到系统输入法（输中文）
+export const ACT_ABC = 3;  // 从系统输入法切回紧凑键盘
+
+/** 双指拖动画面的阶段 */
+export const PAN_START = 0;
+export const PAN_UPDATE = 1;
+export const PAN_END = 2;
 
 interface KeyDef {
   label: string;
@@ -129,8 +134,7 @@ const ROW_BOTTOM: KeyDef[] = [
   kmod('Ctrl', KMOD_CTRL, 0x1D, false, 1.2),
   kmod('Alt', KMOD_ALT, 0x38, false, 1.2),
   kmod('Win', KMOD_WIN, 0x5B, true, 1.2),
-  k(' ', 0x39, '', 3),
-  kact('Fn', ACT_FN, 1.1),
+  k(' ', 0x39, '', 3.4),
   k('↵', 0x1C, '', 1.6)
 ];
 
@@ -156,11 +160,12 @@ const NAV_ROWS: KeyDef[][] = [
   [k('Tab', 0x0F), ke('End', 0x4F), ke('PgDn', 0x51)]
 ];
 
-const FN_ROWS: KeyDef[][] = [
-  [k('F1', 0x3B), k('F2', 0x3C), k('F3', 0x3D)],
-  [k('F4', 0x3E), k('F5', 0x3F), k('F6', 0x40)],
-  [k('F7', 0x41), k('F8', 0x42), k('F9', 0x43)],
-  [k('F10', 0x44), k('F11', 0x57), k('F12', 0x58)]
+/** 打中文时用的一份：Ins 换成「abc」，否则从系统输入法回不到紧凑键盘 */
+const NAV_ROWS_IME: KeyDef[][] = [
+  [ke('Esc', 0x01), ke('Del', 0x53), kact('abc', ACT_ABC, 1)],
+  [ke('Home', 0x47), ke('↑', 0x48), ke('PgUp', 0x49)],
+  [ke('←', 0x4B), ke('↓', 0x50), ke('→', 0x4D)],
+  [k('Tab', 0x0F), ke('End', 0x4F), ke('PgDn', 0x51)]
 ];
 
 /** 独立使用（打中文时）才需要的修饰键列——紧凑键盘自己的底行已经有它们了 */
@@ -179,13 +184,14 @@ export function navPadWidth(withMods: boolean): number {
 @Component
 export struct NavPad {
   @Link stickyMods: number;
-  /** 显示 F1-F12 而不是导航键 */
-  @Prop fnLayer: boolean = false;
-  /** 最左边补一列 Ctrl/Alt/Shift/Win（脱离紧凑键盘单独用时需要） */
+  /** 最左边补一列 Ctrl/Alt/Shift/Win，并把 Ins 换成 abc（脱离紧凑键盘单独用时） */
   @Prop withMods: boolean = false;
   /** 面板高度；放进紧凑键盘时由外部给出可用高度 */
   @Prop padHeight: number = NAV_PAD_H;
   onKey: (code: number, ext: boolean, needShift: boolean) => void = () => {};
+  onAction: (act: number) => void = () => {};
+  /** 双指竖拖：面板压着画面，手指落在这上面也得能把画面推上去 */
+  onPan: (phase: number, dy: number) => void = () => {};
 
   private isActive(key: KeyDef): boolean {
     return key.role === R_MOD && (this.stickyMods & key.modBit) !== 0;
@@ -194,6 +200,10 @@ export struct NavPad {
   private tap(key: KeyDef): void {
     if (key.role === R_MOD) {
       this.stickyMods = this.stickyMods ^ key.modBit;
+      return;
+    }
+    if (key.role === R_ACT) {
+      this.onAction(key.act);
       return;
     }
     this.onKey(key.code, key.ext, key.needShift);
@@ -223,7 +233,7 @@ export struct NavPad {
         .height('100%')
       }
       Column({ space: 4 }) {
-        ForEach(this.fnLayer ? FN_ROWS : NAV_ROWS, (row: KeyDef[]) => {
+        ForEach(this.withMods ? NAV_ROWS_IME : NAV_ROWS, (row: KeyDef[]) => {
           Row({ space: 4 }) {
             ForEach(row, (item: KeyDef) => {
               Row() {
@@ -236,19 +246,26 @@ export struct NavPad {
               .height('100%')
               .justifyContent(FlexAlign.Center)
               .borderRadius(5)
-              .backgroundColor('#40FFFFFF')
+              .backgroundColor(item.role === R_ACT ? '#26FFFFFF' : '#40FFFFFF')
               .onClick(() => { this.tap(item); })
             }, (item: KeyDef) => item.label)
           }
           .width('100%')
           .layoutWeight(1)
-        }, (row: KeyDef[], idx: number) => `${this.fnLayer ? 'f' : 'n'}${idx}`)
+        }, (row: KeyDef[], idx: number) => `${this.withMods ? 'm' : 'n'}${idx}`)
       }
       .layoutWeight(1)
       .height('100%')
     }
     .width(navPadWidth(this.withMods))
     .height(this.padHeight)
+    .gesture(
+      PanGesture({ fingers: 2, direction: PanDirection.Vertical })
+        .onActionStart(() => { this.onPan(PAN_START, 0); })
+        .onActionUpdate((e: GestureEvent) => { this.onPan(PAN_UPDATE, e.offsetY as number); })
+        .onActionEnd(() => { this.onPan(PAN_END, 0); })
+        .onActionCancel(() => { this.onPan(PAN_END, 0); })
+    )
   }
 }
 
@@ -258,11 +275,11 @@ export struct SoftKeyboard {
   @Link stickyMods: number;
   /** false = 字母层，true = 数字/符号层 */
   @State symbolLayer: boolean = false;
-  /** 右侧区显示 F1-F12 */
-  @State fnLayer: boolean = false;
   onKey: (code: number, ext: boolean, needShift: boolean) => void = () => {};
-  /** 键盘自身动作（切系统输入法 / 收起） */
+  /** 键盘自身动作（切系统输入法） */
   onAction: (act: number) => void = () => {};
+  /** 双指竖拖：键盘压着画面，手指落在键盘上也得能把画面推上去 */
+  onPan: (phase: number, dy: number) => void = () => {};
 
   private shiftOn(): boolean {
     return (this.stickyMods & KMOD_SHIFT) !== 0;
@@ -276,8 +293,6 @@ export struct SoftKeyboard {
     if (key.role === R_ACT) {
       if (key.act === ACT_LAYER) {
         this.symbolLayer = !this.symbolLayer;
-      } else if (key.act === ACT_FN) {
-        this.fnLayer = !this.fnLayer;
       } else {
         this.onAction(key.act);
       }
@@ -297,13 +312,7 @@ export struct SoftKeyboard {
   }
 
   private isActive(key: KeyDef): boolean {
-    if (key.role === R_MOD) {
-      return (this.stickyMods & key.modBit) !== 0;
-    }
-    if (key.role === R_ACT && key.act === ACT_FN) {
-      return this.fnLayer;
-    }
-    return false;
+    return key.role === R_MOD && (this.stickyMods & key.modBit) !== 0;
   }
 
   build() {
@@ -341,15 +350,23 @@ export struct SoftKeyboard {
 
       NavPad({
         stickyMods: $stickyMods,
-        fnLayer: this.fnLayer,
         withMods: false,
         padHeight: SOFT_KB_H - 10,
-        onKey: this.onKey
+        onKey: this.onKey,
+        onAction: this.onAction,
+        onPan: this.onPan
       })
     }
     .width('100%')
     .height(SOFT_KB_H)
     .padding({ left: 6, right: 6, top: 5, bottom: 5 })
     .backgroundColor('#F0181818')
+    .gesture(
+      PanGesture({ fingers: 2, direction: PanDirection.Vertical })
+        .onActionStart(() => { this.onPan(PAN_START, 0); })
+        .onActionUpdate((e: GestureEvent) => { this.onPan(PAN_UPDATE, e.offsetY as number); })
+        .onActionEnd(() => { this.onPan(PAN_END, 0); })
+        .onActionCancel(() => { this.onPan(PAN_END, 0); })
+    )
   }
 }

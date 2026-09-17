@@ -8,8 +8,8 @@ import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
 import { PCStore } from '../model/PCStore';
-import { SoftKeyboard, NavPad, navPadWidth, SOFT_KB_H, NAV_PAD_H, ACT_IME, ACT_HIDE }
-  from '../components/SoftKeyboard';
+import { SoftKeyboard, NavPad, navPadWidth, SOFT_KB_H, NAV_PAD_H, ACT_IME, ACT_ABC,
+  PAN_START, PAN_UPDATE } from '../components/SoftKeyboard';
 import { isPcDevice, isLargeScreen, defaultScalePercent } from '../model/DeviceKit';
 import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
   MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
@@ -799,24 +799,44 @@ export struct SessionPage {
     }
   }
 
-  /** 紧凑键盘的动作键 */
+  /** 紧凑键盘 / 导航面板的动作键 */
   private onSoftAction(act: number): void {
     if (act === ACT_IME) {
-      this.softKb = false; // 打中文：让位给系统输入法（它带候选词，自绘的替代不了）
-      this.clampShift();
-      this.showKeyboard();
-    } else if (act === ACT_HIDE) {
+      // 打中文：让位给系统输入法（它带候选词，自绘的替代不了）。
+      // 这里**不能** clampShift：系统键盘还没弹出，panLimit 此刻是 0，一收画面就弹回原位；
+      // 等键盘高度回调到了，遮挡反而更高，本就不需要收
       this.softKb = false;
-      this.clampShift();
+      this.showKeyboard();
+    } else if (act === ACT_ABC) {
+      // 从系统输入法切回紧凑键盘。先置位再收键盘，收起回调里按紧凑键盘的高度收画面
+      this.softKb = true;
+      this.hideKeyboard();
+    }
+  }
+
+  /** 键盘/导航面板上的双指竖拖：它们盖着画面，手指落在上面也得能把画面推上去。
+   *  触摸本来就不会传给 XComponent，所以不必动 setGestureActive */
+  private onPanelPan(phase: number, dy: number): void {
+    if (phase === PAN_START) {
+      if (this.panLimit() <= 0 || this.kbPanFingers !== 0) {
+        return;
+      }
+      this.kbPanFingers = 2;
+      this.baseKbShift = this.kbShift;
+    } else if (phase === PAN_UPDATE) {
+      if (this.kbPanFingers === 2) {
+        this.kbShift = Math.min(this.panLimit(), Math.max(0, this.baseKbShift - dy));
+      }
+    } else if (this.kbPanFingers === 2) {
+      this.kbPanFingers = 0;
     }
   }
 
   /** 工具条「键盘」：在紧凑键盘 / 收起之间切换；系统输入法开着时先收它 */
   private toggleKeyboard(): void {
     if (this.keyboardShown) {
-      this.hideKeyboard();
+      this.hideKeyboard(); // 收起回调里会把画面收回去
       this.softKb = false;
-      this.clampShift();
       return;
     }
     this.softKb = !this.softKb;
@@ -873,10 +893,11 @@ export struct SessionPage {
     console.info(`HMRDP keyboard height px=${px} vp=${vp}`);
     this.kbHeight = vp;
     if (vp <= 0) {
-      // 键盘收起（含输入法自己的收起按钮）：画面归位、状态同步
-      this.kbShift = 0;
+      // 键盘收起（含输入法自己的收起按钮）：状态同步。画面按「现在还剩多少遮挡」来收——
+      // 切回紧凑键盘时它还挡着 156vp，直接归零会让画面白弹一下
       this.keyboardShown = false;
       this.stickyMods = 0;
+      this.clampShift();
     } else {
       this.keyboardShown = true;
       this.kbShift = Math.min(this.kbShift, this.panLimit());
@@ -1269,27 +1290,39 @@ export struct SessionPage {
         // 打中文时左侧字母区让位给系统输入法，右侧导航面板留在屏幕上继续用，
         // 并补一列 Ctrl/Alt/Shift/Win（紧凑键盘那列在左侧底行，这里没有了）
         if (this.connected && this.kbHeight > 0 && !this.softKb) {
-          NavPad({
-            stickyMods: $stickyMods,
-            fnLayer: false,
-            withMods: true,
-            padHeight: NAV_PAD_H,
-            onKey: (code: number, ext: boolean, needShift: boolean) => {
-              this.sendWithMods(code, ext, needShift);
-            }
-          })
-            .position({ right: 8, bottom: this.kbHeight })
+          // 包一层原生容器再定位：position 之类的布局属性直接挂在自定义组件上，
+          // 会落到它的包装节点上，面板要么错位要么干脆看不见
+          Column() {
+            NavPad({
+              stickyMods: $stickyMods,
+              withMods: true,
+              padHeight: NAV_PAD_H,
+              onKey: (code: number, ext: boolean, needShift: boolean) => {
+                this.sendWithMods(code, ext, needShift);
+              },
+              onAction: (act: number) => { this.onSoftAction(act); },
+              onPan: (phase: number, dy: number) => { this.onPanelPan(phase, dy); }
+            })
+          }
+          .width(navPadWidth(true))
+          .height(NAV_PAD_H)
+          .position({ right: 8, bottom: this.kbHeight })
         }
 
         if (this.connected && this.softKb) {
-          SoftKeyboard({
-            stickyMods: $stickyMods,
-            onKey: (code: number, ext: boolean, needShift: boolean) => {
-              this.sendWithMods(code, ext, needShift);
-            },
-            onAction: (act: number) => { this.onSoftAction(act); }
-          })
-            .position({ left: 0, bottom: 0 })
+          Column() {
+            SoftKeyboard({
+              stickyMods: $stickyMods,
+              onKey: (code: number, ext: boolean, needShift: boolean) => {
+                this.sendWithMods(code, ext, needShift);
+              },
+              onAction: (act: number) => { this.onSoftAction(act); },
+              onPan: (phase: number, dy: number) => { this.onPanelPan(phase, dy); }
+            })
+          }
+          .width('100%')
+          .height(SOFT_KB_H)
+          .position({ left: 0, bottom: 0 })
         }
 
         if (this.connected) {
