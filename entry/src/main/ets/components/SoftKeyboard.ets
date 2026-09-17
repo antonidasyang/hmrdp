@@ -1,4 +1,4 @@
-// 会话内的紧凑软键盘（自绘）。
+// 会话内的紧凑软键盘（自绘）+ 可独立使用的导航键面板。
 //
 // 为什么不用系统输入法：客户端侧 @ohos.inputMethod 没有任何控制键盘尺寸/位置的接口，
 // resize/moveTo/adjustPanelRect 都在 @ohos.inputMethodEngine（输入法应用自己用）里。
@@ -6,10 +6,12 @@
 // 「键矮、字母区靠左、右侧空出来的地方放 Esc/方向键/PgUp 这些功能键」。
 //
 // 所有键一律走扫描码（不是 Unicode），所以 Ctrl+C / Shift+方向键这类组合天然可用；
-// 中文输入仍交给系统输入法，键盘上的「中」键一键切过去。
+// 中文输入交给系统输入法，此时左侧字母区让位，右侧导航面板（NavPad）继续留在屏幕上。
 
-/** 键盘总高（vp）。系统键盘 222 + 功能键条 34 = 256vp，这里 156vp，省出 100vp */
+/** 紧凑键盘总高（vp）。系统键盘 222vp，这里 156vp */
 export const SOFT_KB_H = 156;
+/** 导航面板高度（vp），4 行 */
+export const NAV_PAD_H = 150;
 
 /** 修饰键位掩码，与 SessionPage 的 stickyMods 同一套（MOD_KEYS 下标） */
 const KMOD_CTRL = 1;
@@ -42,6 +44,12 @@ interface KeyDef {
   role: number;
   modBit: number;
   act: number;
+}
+
+/** 一行键 + 两侧缩进（vp），用来做 QWERTY 第二行的半键错位 */
+interface KbRow {
+  keys: KeyDef[];
+  indent: number;
 }
 
 function k(label: string, code: number, shiftLabel: string = '', weight: number = 1): KeyDef {
@@ -81,7 +89,10 @@ function kact(label: string, act: number, weight: number): KeyDef {
   };
 }
 
-// ---- 左侧：字母 / 数字符号区，4 行 ----
+const K_SHIFT: KeyDef = kmod('⇧', KMOD_SHIFT, 0x2A, false, 1.5);
+const K_BACKSPACE: KeyDef = k('⌫', 0x0E, '', 1.5);
+
+// ---- 左侧：字母层 ----
 
 const ROW_QWERTY: KeyDef[] = [
   k('q', 0x10, 'Q'), k('w', 0x11, 'W'), k('e', 0x12, 'E'), k('r', 0x13, 'R'), k('t', 0x14, 'T'),
@@ -91,10 +102,12 @@ const ROW_ASDF: KeyDef[] = [
   k('a', 0x1E, 'A'), k('s', 0x1F, 'S'), k('d', 0x20, 'D'), k('f', 0x21, 'F'), k('g', 0x22, 'G'),
   k('h', 0x23, 'H'), k('j', 0x24, 'J'), k('k', 0x25, 'K'), k('l', 0x26, 'L')
 ];
-const ROW_ZXCV: KeyDef[] = [
+const ROW_ZXCV: KeyDef[] = [K_SHIFT,
   k('z', 0x2C, 'Z'), k('x', 0x2D, 'X'), k('c', 0x2E, 'C'), k('v', 0x2F, 'V'),
-  k('b', 0x30, 'B'), k('n', 0x31, 'N'), k('m', 0x32, 'M')
-];
+  k('b', 0x30, 'B'), k('n', 0x31, 'N'), k('m', 0x32, 'M'),
+  K_BACKSPACE];
+
+// ---- 左侧：数字/符号层 ----
 
 const ROW_NUM: KeyDef[] = [
   k('1', 0x02, '!'), k('2', 0x03, '@'), k('3', 0x04, '#'), k('4', 0x05, '$'), k('5', 0x06, '%'),
@@ -105,13 +118,10 @@ const ROW_SYM1: KeyDef[] = [
   k(';', 0x27, ':'), k('\'', 0x28, '"'), k(',', 0x33, '<'), k('.', 0x34, '>'), k('/', 0x35, '?')
 ];
 // 常用的 Shift 变体直接给键位，省得先按 Shift 再按键
-const ROW_SYM2: KeyDef[] = [
+const ROW_SYM2: KeyDef[] = [K_SHIFT,
   k('`', 0x29, '~'), ksh('{', 0x1A), ksh('}', 0x1B), ksh('|', 0x2B),
-  ksh('~', 0x29), ksh('_', 0x0C), ksh('+', 0x0D)
-];
-
-const K_SHIFT: KeyDef = kmod('⇧', KMOD_SHIFT, 0x2A, false, 1.5);
-const K_BACKSPACE: KeyDef = k('⌫', 0x0E, '', 1.5);
+  ksh('~', 0x29), ksh('_', 0x0C), ksh('+', 0x0D),
+  K_BACKSPACE];
 
 const ROW_BOTTOM: KeyDef[] = [
   kact('?123', ACT_LAYER, 1.4),
@@ -124,7 +134,20 @@ const ROW_BOTTOM: KeyDef[] = [
   k('↵', 0x1C, '', 1.6)
 ];
 
-// ---- 右侧：导航键 / F 区，4 行 3 列。↑ 在 ↓ 正上方，保持倒 T 手感 ----
+const ALPHA_ROWS: KbRow[] = [
+  { keys: ROW_QWERTY, indent: 0 },
+  { keys: ROW_ASDF, indent: 26 }, // 比上一行少一键，两侧各缩半个键宽，保住 QWERTY 手感
+  { keys: ROW_ZXCV, indent: 0 },
+  { keys: ROW_BOTTOM, indent: 0 }
+];
+const SYMBOL_ROWS: KbRow[] = [
+  { keys: ROW_NUM, indent: 0 },
+  { keys: ROW_SYM1, indent: 0 },
+  { keys: ROW_SYM2, indent: 0 },
+  { keys: ROW_BOTTOM, indent: 0 }
+];
+
+// ---- 右侧导航面板：4 行。↑ 在 ↓ 正上方，保持倒 T 手感 ----
 
 const NAV_ROWS: KeyDef[][] = [
   [ke('Esc', 0x01), ke('Del', 0x53), ke('Ins', 0x52)],
@@ -140,15 +163,103 @@ const FN_ROWS: KeyDef[][] = [
   [k('F10', 0x44), k('F11', 0x57), k('F12', 0x58)]
 ];
 
+/** 独立使用（打中文时）才需要的修饰键列——紧凑键盘自己的底行已经有它们了 */
+const MOD_COL: KeyDef[] = [
+  kmod('Ctrl', KMOD_CTRL, 0x1D, false, 1),
+  kmod('Alt', KMOD_ALT, 0x38, false, 1),
+  K_SHIFT,
+  kmod('Win', KMOD_WIN, 0x5B, true, 1)
+];
+
+/** 导航面板宽度：带修饰键列时 4 列，否则 3 列 */
+export function navPadWidth(withMods: boolean): number {
+  return withMods ? 222 : 168;
+}
+
+@Component
+export struct NavPad {
+  @Link stickyMods: number;
+  /** 显示 F1-F12 而不是导航键 */
+  @Prop fnLayer: boolean = false;
+  /** 最左边补一列 Ctrl/Alt/Shift/Win（脱离紧凑键盘单独用时需要） */
+  @Prop withMods: boolean = false;
+  /** 面板高度；放进紧凑键盘时由外部给出可用高度 */
+  @Prop padHeight: number = NAV_PAD_H;
+  onKey: (code: number, ext: boolean, needShift: boolean) => void = () => {};
+
+  private isActive(key: KeyDef): boolean {
+    return key.role === R_MOD && (this.stickyMods & key.modBit) !== 0;
+  }
+
+  private tap(key: KeyDef): void {
+    if (key.role === R_MOD) {
+      this.stickyMods = this.stickyMods ^ key.modBit;
+      return;
+    }
+    this.onKey(key.code, key.ext, key.needShift);
+  }
+
+  build() {
+    Row({ space: 4 }) {
+      if (this.withMods) {
+        Column({ space: 4 }) {
+          ForEach(MOD_COL, (item: KeyDef) => {
+            Row() {
+              Text(item.label)
+                .fontSize(item.label.length > 2 ? 11 : 15)
+                .fontColor(this.isActive(item) ? '#111111' : Color.White)
+                .maxLines(1)
+            }
+            .width('100%')
+            .layoutWeight(1)
+            .justifyContent(FlexAlign.Center)
+            .borderRadius(5)
+            .backgroundColor(this.isActive(item) ? '#4DA3FF' : '#26FFFFFF')
+            .onClick(() => { this.tap(item); })
+            // key 带上点亮态：同 key 的项不会重新执行 itemGenerator，点了不会变色
+          }, (item: KeyDef) => `${item.label}${this.isActive(item) ? 1 : 0}`)
+        }
+        .width(50)
+        .height('100%')
+      }
+      Column({ space: 4 }) {
+        ForEach(this.fnLayer ? FN_ROWS : NAV_ROWS, (row: KeyDef[]) => {
+          Row({ space: 4 }) {
+            ForEach(row, (item: KeyDef) => {
+              Row() {
+                Text(item.label)
+                  .fontSize(item.label.length > 2 ? 11 : 15)
+                  .fontColor(Color.White)
+                  .maxLines(1)
+              }
+              .layoutWeight(1)
+              .height('100%')
+              .justifyContent(FlexAlign.Center)
+              .borderRadius(5)
+              .backgroundColor('#40FFFFFF')
+              .onClick(() => { this.tap(item); })
+            }, (item: KeyDef) => item.label)
+          }
+          .width('100%')
+          .layoutWeight(1)
+        }, (row: KeyDef[], idx: number) => `${this.fnLayer ? 'f' : 'n'}${idx}`)
+      }
+      .layoutWeight(1)
+      .height('100%')
+    }
+    .width(navPadWidth(this.withMods))
+    .height(this.padHeight)
+  }
+}
+
 @Component
 export struct SoftKeyboard {
-  /** 粘滞修饰键，与会话页共享（功能键条与本键盘同一套状态） */
+  /** 粘滞修饰键，与会话页共享 */
   @Link stickyMods: number;
   /** false = 字母层，true = 数字/符号层 */
   @State symbolLayer: boolean = false;
   /** 右侧区显示 F1-F12 */
   @State fnLayer: boolean = false;
-  /** 发一个键（由会话页带上粘滞修饰键后下发） */
   onKey: (code: number, ext: boolean, needShift: boolean) => void = () => {};
   /** 键盘自身动作（切系统输入法 / 收起） */
   onAction: (act: number) => void = () => {};
@@ -195,79 +306,46 @@ export struct SoftKeyboard {
     return false;
   }
 
-  /** ForEach 的 key 必须带上会影响显示的全部状态：同 key 的项不会重新执行
-   *  itemGenerator，修饰键点了不会变色、Shift 后字母也不会变大写 */
-  private keyId(key: KeyDef): string {
-    return `${key.label}|${this.caption(key)}|${this.isActive(key) ? 1 : 0}`;
-  }
-
-  /** 单个键帽。内联而不是抽成 @Component：layoutWeight 必须落在父 Row 的直接子节点上，
-   *  自定义组件外面那层包装会把权重吃掉，键宽就全乱了 */
-  @Builder
-  cap(key: KeyDef) {
-    Row() {
-      Text(this.caption(key))
-        .fontSize(this.caption(key).length > 2 ? 11 : 15)
-        .fontColor(this.isActive(key) ? '#111111' : Color.White)
-        .maxLines(1)
-    }
-    .layoutWeight(key.weight)
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .borderRadius(5)
-    .backgroundColor(this.isActive(key) ? '#4DA3FF'
-      : (key.role === R_NORMAL ? '#40FFFFFF' : '#26FFFFFF'))
-    .onClick(() => { this.tap(key); })
-  }
-
-  /** indent：行两侧缩进（vp），用来做 QWERTY 第二行的半键错位 */
-  @Builder
-  keyRow(keys: KeyDef[], indent: number) {
-    Row({ space: 4 }) {
-      ForEach(keys, (item: KeyDef) => {
-        this.cap(item)
-      }, (item: KeyDef) => this.keyId(item))
-    }
-    .width('100%')
-    .layoutWeight(1)
-    .padding({ left: indent, right: indent })
-  }
-
-  /** 第三行：⇧ + 中间键 + ⌫ */
-  @Builder
-  shiftRow(middle: KeyDef[]) {
-    Row({ space: 4 }) {
-      this.cap(K_SHIFT)
-      ForEach(middle, (item: KeyDef) => {
-        this.cap(item)
-      }, (item: KeyDef) => this.keyId(item))
-      this.cap(K_BACKSPACE)
-    }
-    .width('100%')
-    .layoutWeight(1)
-  }
-
   build() {
     Row({ space: 6 }) {
-      // 左：字母/符号区，占满剩余宽度
+      // 左：字母/符号区。整个键盘的行都在这一个 ForEach 里渲染，且 key 带上层标记——
+      // 不能把行数据当参数传给 @Builder：ArkUI V1 的 @Builder 值参不响应变化，
+      // ?123 切到符号层时参数变了但 Builder 不重渲染，键盘会一直停在字母层。
       Column({ space: 4 }) {
-        this.keyRow(this.symbolLayer ? ROW_NUM : ROW_QWERTY, 0)
-        // 字母层第二行比第一行少一个键，两侧各缩进半个键宽；符号层是满 10 键，不缩
-        this.keyRow(this.symbolLayer ? ROW_SYM1 : ROW_ASDF, this.symbolLayer ? 0 : 26)
-        this.shiftRow(this.symbolLayer ? ROW_SYM2 : ROW_ZXCV)
-        this.keyRow(ROW_BOTTOM, 0)
+        ForEach(this.symbolLayer ? SYMBOL_ROWS : ALPHA_ROWS, (row: KbRow) => {
+          Row({ space: 4 }) {
+            ForEach(row.keys, (item: KeyDef) => {
+              Row() {
+                Text(this.caption(item))
+                  .fontSize(this.caption(item).length > 2 ? 11 : 15)
+                  .fontColor(this.isActive(item) ? '#111111' : Color.White)
+                  .maxLines(1)
+              }
+              .layoutWeight(item.weight)
+              .height('100%')
+              .justifyContent(FlexAlign.Center)
+              .borderRadius(5)
+              .backgroundColor(this.isActive(item) ? '#4DA3FF'
+                : (item.role === R_NORMAL ? '#40FFFFFF' : '#26FFFFFF'))
+              .onClick(() => { this.tap(item); })
+              // key 带上显示文字与点亮态，Shift 切大小写、修饰键点亮才会真的重画
+            }, (item: KeyDef) => `${item.label}|${this.caption(item)}|${this.isActive(item) ? 1 : 0}`)
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .padding({ left: row.indent, right: row.indent })
+        }, (row: KbRow, idx: number) => `${this.symbolLayer ? 's' : 'a'}${idx}`)
       }
       .layoutWeight(1)
       .height('100%')
 
-      // 右：导航键 / F 区
-      Column({ space: 4 }) {
-        ForEach(this.fnLayer ? FN_ROWS : NAV_ROWS, (row: KeyDef[]) => {
-          this.keyRow(row, 0)
-        }, (row: KeyDef[], idx: number) => `${this.fnLayer ? 'f' : 'n'}${idx}`)
-      }
-      .width(168)
-      .height('100%')
+      NavPad({
+        stickyMods: $stickyMods,
+        fnLayer: this.fnLayer,
+        withMods: false,
+        padHeight: SOFT_KB_H - 10,
+        onKey: this.onKey
+      })
     }
     .width('100%')
     .height(SOFT_KB_H)

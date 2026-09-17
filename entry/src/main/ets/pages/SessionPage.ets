@@ -8,7 +8,8 @@ import hmrdp from 'libhmrdp.so';
 import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
 import { PCStore } from '../model/PCStore';
-import { SoftKeyboard, SOFT_KB_H, ACT_IME, ACT_HIDE } from '../components/SoftKeyboard';
+import { SoftKeyboard, NavPad, navPadWidth, SOFT_KB_H, NAV_PAD_H, ACT_IME, ACT_HIDE }
+  from '../components/SoftKeyboard';
 import { isPcDevice, isLargeScreen, defaultScalePercent } from '../model/DeviceKit';
 import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
   MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
@@ -18,50 +19,12 @@ import { SessionAliveResponder } from '../model/SessionProbe';
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
 
-/** 功能键条高度（vp）。只在用系统输入法打中文时出现，紧凑键盘自带功能区不需要它 */
-const KEY_BAR_H = 34;
-
-/** 功能键：PS/2 set 1 扫描码 + 是否扩展键（E0 前缀） */
-interface FnKey {
-  label: string;
-  code: number;
-  ext: boolean;
-}
-
 /** 修饰键：粘滞式，点亮后随下一个键一起发出再自动松开 */
 interface ModKey {
   label: string;
   code: number;
   ext: boolean;
 }
-
-// 顺序按远程桌面上的使用频度排：先编辑/导航，再 F 区
-const FN_KEYS: FnKey[] = [
-  { label: 'Esc', code: 0x01, ext: false },
-  { label: 'Tab', code: 0x0F, ext: false },
-  { label: 'Del', code: 0x53, ext: true },
-  { label: '←', code: 0x4B, ext: true },
-  { label: '↑', code: 0x48, ext: true },
-  { label: '↓', code: 0x50, ext: true },
-  { label: '→', code: 0x4D, ext: true },
-  { label: 'Home', code: 0x47, ext: true },
-  { label: 'End', code: 0x4F, ext: true },
-  { label: 'PgUp', code: 0x49, ext: true },
-  { label: 'PgDn', code: 0x51, ext: true },
-  { label: 'Ins', code: 0x52, ext: true },
-  { label: 'F1', code: 0x3B, ext: false },
-  { label: 'F2', code: 0x3C, ext: false },
-  { label: 'F3', code: 0x3D, ext: false },
-  { label: 'F4', code: 0x3E, ext: false },
-  { label: 'F5', code: 0x3F, ext: false },
-  { label: 'F6', code: 0x40, ext: false },
-  { label: 'F7', code: 0x41, ext: false },
-  { label: 'F8', code: 0x42, ext: false },
-  { label: 'F9', code: 0x43, ext: false },
-  { label: 'F10', code: 0x44, ext: false },
-  { label: 'F11', code: 0x57, ext: false },
-  { label: 'F12', code: 0x58, ext: false }
-];
 
 /** stickyMods 里 Shift 的位（MOD_KEYS 下标 2） */
 const MOD_SHIFT_BIT = 4;
@@ -82,29 +45,6 @@ const SC_LETTERS: number[] = [
 ];
 /** 数字 0-9 的扫描码 */
 const SC_DIGITS: number[] = [0x0B, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
-
-@Component
-struct KeyCap {
-  // 同 ToolButton：用 @Prop 而非 @Builder 值参，否则粘滞修饰键点亮后不刷新
-  @Prop label: string = '';
-  @Prop active: boolean = false;
-  action: () => void = () => {};
-
-  build() {
-    Row() {
-      Text(this.label)
-        .fontSize(12)
-        .fontColor(this.active ? '#111111' : Color.White)
-    }
-    .constraintSize({ minWidth: 36 })
-    .height(26)
-    .padding({ left: 8, right: 8 })
-    .justifyContent(FlexAlign.Center)
-    .borderRadius(6)
-    .backgroundColor(this.active ? '#4DA3FF' : '#33FFFFFF')
-    .onClick(() => { this.action(); })
-  }
-}
 
 // libhmrdp.so 的 CertRequest 本地镜像
 interface HmCertRequest {
@@ -235,9 +175,10 @@ export struct SessionPage {
   // 像 Windows App 那样拖一下就能看到被键盘挡住的内容。kbHeight 为 vp，0 = 键盘未弹出
   @State kbHeight: number = 0;
   @State kbShift: number = 0;
-  /** 粘滞按下的修饰键（位掩码，见 MOD_KEYS 下标）；紧凑键盘与功能键条共用同一套 */
+  /** 粘滞按下的修饰键（位掩码，见 MOD_KEYS 下标）；紧凑键盘与导航面板共用同一套 */
   @State stickyMods: number = 0;
-  /** 会话自带的紧凑键盘（自绘）是否显示。与系统输入法互斥：打中文时切到后者 */
+  /** 会话自带的紧凑键盘（自绘）是否显示。打中文时让位给系统输入法，
+   *  但右侧导航面板（NavPad）会继续留在屏幕上 */
   @State softKb: boolean = false;
   private baseKbShift: number = 0;
   // 正在上推画面的手势用了几根手指（0 = 没有）。PanGesture 的 fingers 是「至少几指」，
@@ -798,7 +739,20 @@ export struct SessionPage {
     if (this.softKb) {
       return SOFT_KB_H;
     }
-    return this.kbHeight > 0 ? this.kbHeight + KEY_BAR_H : 0;
+    return this.kbHeight > 0 ? this.kbHeight + NAV_PAD_H : 0;
+  }
+
+  /** 工具条位置：躲开键盘区。系统输入法态下导航面板只占右侧一条，
+   *  把工具条左移让开它即可，不必抬到面板上方（那会顶出屏幕） */
+  private toolbarBottom(): number {
+    if (this.softKb) {
+      return 40 + SOFT_KB_H;
+    }
+    return this.kbHeight > 0 ? 40 + this.kbHeight : 40;
+  }
+
+  private toolbarRight(): number {
+    return (!this.softKb && this.kbHeight > 0) ? 20 + navPadWidth(true) : 12;
   }
 
   /** 当前粘滞按下的修饰键 */
@@ -891,40 +845,6 @@ export struct SessionPage {
     for (let i = 0; i < text.length; i++) {
       hmrdp.sendUnicode(text.charCodeAt(i));
     }
-  }
-
-  @Builder
-  keyBar() {
-    Scroll() {
-      Row({ space: 6 }) {
-        ForEach(MOD_KEYS, (m: ModKey, idx: number) => {
-          KeyCap({
-            label: m.label,
-            active: (this.stickyMods & (1 << idx)) !== 0,
-            action: () => {
-              this.stickyMods = this.stickyMods ^ (1 << idx); // 再点一次取消
-            }
-          })
-          // key 必须带上点亮状态：ForEach 对 key 相同的项不重新执行 itemGenerator，
-          // 只写 label 的话粘滞修饰键点了不会变色（@Prop 拿不到新值）
-        }, (m: ModKey, idx: number) => `${m.label}${(this.stickyMods & (1 << idx)) !== 0 ? '1' : '0'}`)
-        ForEach(FN_KEYS, (k: FnKey) => {
-          KeyCap({
-            label: k.label,
-            active: false,
-            action: () => { this.sendWithMods(k.code, k.ext); }
-          })
-        }, (k: FnKey) => k.label)
-      }
-      .padding({ left: 10, right: 10 })
-      .height('100%')
-    }
-    .scrollable(ScrollDirection.Horizontal)
-    .scrollBar(BarState.Off)
-    .width('100%')
-    .height(KEY_BAR_H)
-    .backgroundColor('#E6000000')
-    .position({ left: 0, bottom: this.kbHeight })
   }
 
   /** 监听软键盘高度：既拿到可上推的范围，也能感知用户用输入法自己的按钮收起了键盘 */
@@ -1233,7 +1153,7 @@ export struct SessionPage {
     .borderRadius(24)
     .padding(4)
     // 抬到键盘区上方，别被盖住
-    .position({ right: 12, bottom: 40 + this.panLimit() })
+    .position({ right: this.toolbarRight(), bottom: this.toolbarBottom() })
   }
 
   build() {
@@ -1346,8 +1266,19 @@ export struct SessionPage {
             }
           })
 
+        // 打中文时左侧字母区让位给系统输入法，右侧导航面板留在屏幕上继续用，
+        // 并补一列 Ctrl/Alt/Shift/Win（紧凑键盘那列在左侧底行，这里没有了）
         if (this.connected && this.kbHeight > 0 && !this.softKb) {
-          this.keyBar()
+          NavPad({
+            stickyMods: $stickyMods,
+            fnLayer: false,
+            withMods: true,
+            padHeight: NAV_PAD_H,
+            onKey: (code: number, ext: boolean, needShift: boolean) => {
+              this.sendWithMods(code, ext, needShift);
+            }
+          })
+            .position({ right: 8, bottom: this.kbHeight })
         }
 
         if (this.connected && this.softKb) {
