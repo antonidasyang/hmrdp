@@ -114,6 +114,22 @@ interface HmDriveEntry {
   path: string;
 }
 
+/** 工具条按钮的逐个解说 */
+interface TourStep {
+  /** 与工具条按钮对应的标识，用来高亮那颗按钮；空串 = 不高亮 */
+  key: string;
+  symbol: Resource;
+  title: string;
+  desc: string;
+  /** true = 不给「下一步」，等用户自己去点那颗按钮才推进 */
+  waitTap: boolean;
+}
+
+function tstep(key: string, symbol: Resource, title: string, desc: string,
+  waitTap: boolean = false): TourStep {
+  return { key: key, symbol: symbol, title: title, desc: desc, waitTap: waitTap };
+}
+
 const STATE_CONNECTING = 0;
 const STATE_CONNECTED = 1;
 const STATE_DISCONNECTED = 2;
@@ -131,6 +147,8 @@ struct ToolButton {
   /** 符号字号，默认与其余图标一致。circle 是纯圆、视觉面积偏大，可单独调小。
    *  不能叫 size：与 CustomComponent 的通用属性重名，编译期报 not assignable */
   @Prop iconSize: number = 22;
+  /** 新手引导正讲到这个按钮，描个边把它点出来 */
+  @Prop highlight: boolean = false;
   action: () => void = () => {};
 
   build() {
@@ -144,6 +162,9 @@ struct ToolButton {
         .fontColor(this.active ? '#4DA3FF' : Color.White)
     }
     .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+    .borderRadius(10)
+    .backgroundColor(this.highlight ? '#334DA3FF' : Color.Transparent)
+    .border({ width: this.highlight ? 1.5 : 0, color: '#4DA3FF' })
     .onClick(() => { this.action(); })
   }
 }
@@ -184,6 +205,10 @@ export struct SessionPage {
   @State imeBarFolded: boolean = false;
   /** 首次弹出键盘时的操作引导（双指拖动画面），看过一次就不再出现 */
   @State showPanTip: boolean = false;
+  /** 首次连接成功后的新手引导：先逐个讲工具条按钮，再引导点开键盘，最后讲手势。
+   *  -1 = 不在引导中 */
+  @State tourStep: number = -1;
+  private tourList: TourStep[] = [];
   private baseKbShift: number = 0;
   // 正在上推画面的手势用了几根手指（0 = 没有）。PanGesture 的 fingers 是「至少几指」，
   // 双指拖动会把单指 Pan 一起触发，靠这个只认一个手势的回调，免得两边互相抢
@@ -806,10 +831,176 @@ export struct SessionPage {
     }
   }
 
+  // ---- 首次连接后的新手引导 ----
+
+  private buildTourSteps(): TourStep[] {
+    const steps: TourStep[] = [];
+    if (this.isPc) {
+      // PC 有物理键鼠，工具条上只有这几颗，也不需要讲触摸手势
+      steps.push(tstep('home', $r('sys.symbol.circle'), '回鸿蒙',
+        '回到鸿蒙桌面，远程连接不会断开，从任务栏点回来就能接着用。'));
+      steps.push(tstep('syskeys', $r('sys.symbol.gearshape'), '系统键',
+        '发送被鸿蒙拦下、传不到远端的组合键：Win、Win+D、Ctrl+Alt+Del、Alt+Tab 等。'));
+      if (this.displays.length > 1) {
+        steps.push(tstep('display', $r('sys.symbol.display'), '屏幕',
+          '接了多块显示器时，把这个会话窗口搬到指定的那块屏上。'));
+      }
+      steps.push(tstep('disconnect', $r('sys.symbol.xmark'), '断开',
+        '结束这次远程连接，关闭会话窗口。'));
+      steps.push(tstep('collapse', $r('sys.symbol.chevron_right'), '收起',
+        '把工具条收成一个小箭头，不挡画面；再点一次展开。'));
+      return steps;
+    }
+
+    // 一、先把工具条按钮逐个讲一遍
+    steps.push(tstep('keyboard', $r('sys.symbol.keyboard'), '键盘',
+      '调出内置的紧凑键盘，带 Esc、方向键、Home/End、PgUp/PgDn 这些远程桌面离不开、'
+      + '手机键盘又没有的键。'));
+    steps.push(tstep('touch', $r('sys.symbol.hand_point_up_tap_fill'), '直接触摸 / 触控板',
+      '直接触摸：点屏幕哪里就点远端哪里，像用触屏电脑。\n'
+      + '触控板：把屏幕当笔记本触控板，滑动移动鼠标指针、轻点是左键、双指轻点是右键，'
+      + '要精确点小按钮时用它。选了哪种会按这台电脑记住。'));
+    steps.push(tstep('reset', $r('sys.symbol.arrow_counterclockwise'), '复位',
+      '画面被放大、拖动过，或者被键盘顶上去之后，一键回到 1:1 的原始位置。'));
+    steps.push(tstep('syskeys', $r('sys.symbol.gearshape'), '系统键',
+      '发送手机键盘敲不出来的组合键：Win、Win+D、Win+E、Ctrl+Alt+Del、Alt+Tab 等。'));
+    steps.push(tstep('fullscreen', $r('sys.symbol.arrow_up_left_and_arrow_down_right'), '全屏',
+      '隐藏状态栏和导航栏，让远端画面占满整个屏幕。'));
+    steps.push(tstep('disconnect', $r('sys.symbol.xmark'), '断开',
+      '结束这次远程连接，回到电脑列表。'));
+    steps.push(tstep('collapse', $r('sys.symbol.chevron_right'), '收起',
+      '把工具条收成一个小箭头，不挡画面；再点一次展开。'));
+
+    // 二、让用户真把键盘点出来——后面几步讲的东西，屏幕上得看得见才有意义
+    steps.push(tstep('keyboard', $r('sys.symbol.keyboard'), '试一下',
+      '现在点一下工具条上的「键盘」，把键盘调出来。', true));
+
+    // 三、键盘出来了，讲手势和键盘本身
+    steps.push(tstep('', $r('sys.symbol.hand_point_up_tap_fill'), '放大和移动画面',
+      '两根手指张合 = 放大 / 缩小画面。\n'
+      + '两根手指上下拖动 = 把画面移上来，看键盘挡住的部分（手指落在键盘上拖也行）。\n'
+      + '看完点工具条的「复位」就能还原。'));
+    steps.push(tstep('', $r('sys.symbol.keyboard'), '键盘上有什么',
+      '左下角「?123」切数字和符号层。\n'
+      + '右边一块是 Esc、方向键、Home/End、PgUp/PgDn、Del。\n'
+      + 'Ctrl / Alt / Shift / Win 是粘滞键：点一下亮起，跟着按下一个键一起发出去，'
+      + '所以 Ctrl+C、Ctrl+V 这些直接能用。'));
+    steps.push(tstep('', $r('sys.symbol.keyboard'), '打中文',
+      '点键盘底排的「中」，切到系统输入法打中文。\n'
+      + '这时系统键盘上方会多出一条功能键横条，Esc、方向键、Home/End、Del 和几个修饰键'
+      + '都还在那儿，不用来回切。'));
+    steps.push(tstep('', $r('sys.symbol.chevron_down'), '收起横条 / 切回内置键盘',
+      '嫌横条占地方：点它最右边的 ⌄ 折叠，屏幕上就只剩系统键盘；'
+      + '折叠后右下角会留一个「功能键」小把手，点它再展开。\n'
+      + '横条上的「abc」则是切回内置的紧凑键盘。'));
+    return steps;
+  }
+
+  private maybeStartTour(): void {
+    if (this.tourStep >= 0) {
+      return;
+    }
+    try {
+      if (SettingsStore.isToolbarTourSeen(this.ctx())) {
+        return;
+      }
+    } catch (e) {
+      return; // 读不到设置就别引导，免得每次连接都弹
+    }
+    this.tourList = this.buildTourSteps();
+    if (this.tourList.length > 0) {
+      this.tourStep = 0;
+    }
+  }
+
+  /** 当前这步高亮工具条上的哪颗按钮（空串 = 不高亮） */
+  private tourKey(): string {
+    if (this.tourStep < 0 || this.tourStep >= this.tourList.length) {
+      return '';
+    }
+    return this.tourList[this.tourStep].key;
+  }
+
+  /** 当前这步是否在等用户自己去点那颗按钮 */
+  private tourWaiting(): boolean {
+    if (this.tourStep < 0 || this.tourStep >= this.tourList.length) {
+      return false;
+    }
+    return this.tourList[this.tourStep].waitTap;
+  }
+
+  private tourNext(): void {
+    if (this.tourStep < 0) {
+      return;
+    }
+    this.toolbarExpanded = true; // 讲解中保证被高亮的按钮一直看得见
+    if (this.tourStep + 1 >= this.tourList.length) {
+      this.finishTour();
+    } else {
+      this.tourStep = this.tourStep + 1;
+    }
+  }
+
+  private finishTour(): void {
+    this.tourStep = -1;
+    try {
+      SettingsStore.markToolbarTourSeen(this.ctx());
+      SettingsStore.markPanTipSeen(this.ctx()); // 手势那步已经讲过，别再单独弹一次
+    } catch (e) {
+    }
+  }
+
+  @Builder
+  toolbarTour() {
+    Column({ space: 10 }) {
+      Row({ space: 10 }) {
+        SymbolGlyph(this.tourList[this.tourStep].symbol)
+          .fontSize(24)
+          .fontColor(['#4DA3FF'])
+        Text(this.tourList[this.tourStep].title)
+          .fontSize(17)
+          .fontColor(Color.White)
+          .fontWeight(FontWeight.Medium)
+      }
+      .width('100%')
+      Text(this.tourList[this.tourStep].desc)
+        .fontSize(13)
+        .fontColor('#CCFFFFFF')
+        .lineHeight(20)
+        .width('100%')
+      Row({ space: 8 }) {
+        Text(`${this.tourStep + 1} / ${this.tourList.length}`)
+          .fontSize(12)
+          .fontColor('#99FFFFFF')
+        Blank()
+        Button('跳过')
+          .height(32)
+          .fontSize(13)
+          .backgroundColor('#33FFFFFF')
+          .fontColor('#CCFFFFFF')
+          .onClick(() => { this.finishTour(); })
+        if (!this.tourList[this.tourStep].waitTap) {
+          Button(this.tourStep + 1 >= this.tourList.length ? '完成' : '下一步')
+            .height(32)
+            .fontSize(13)
+            .onClick(() => { this.tourNext(); })
+        }
+      }
+      .width('100%')
+    }
+    .width(330)
+    .alignItems(HorizontalAlign.Start)
+    .padding({ left: 18, right: 18, top: 16, bottom: 14 })
+    .backgroundColor('#F5242424')
+    .borderRadius(16)
+    // 贴在工具条正上方：工具条会随键盘抬高，卡片跟着走，始终挨着被讲解的按钮
+    .position({ right: 12, bottom: 104 + this.panLimit() })
+  }
+
   /** 键盘第一次挡住画面时，告诉用户可以双指把画面推上来——这个手势没有任何视觉线索，
    *  不说没人会去试。看过一次就记住，不再打扰 */
   private maybeShowPanTip(): void {
-    if (this.showPanTip || this.isPc) {
+    if (this.showPanTip || this.isPc || this.tourStep >= 0) {
       return;
     }
     try {
@@ -912,7 +1103,11 @@ export struct SessionPage {
     this.stickyMods = 0;
     this.clampShift();
     if (this.softKb) {
-      this.maybeShowPanTip();
+      if (this.tourWaiting() && this.tourKey() === 'keyboard') {
+        this.tourNext(); // 引导里「试一下」这步，点开了就继续讲手势
+      } else {
+        this.maybeShowPanTip();
+      }
     }
   }
 
@@ -1159,6 +1354,12 @@ export struct SessionPage {
       if (!this.isPc) {
         this.setupKeyboardWatch(); // 软键盘高度：上推画面的范围 + 工具条抬升
       }
+      // 首次连接：等画面先出来，再开始讲工具条
+      setTimeout(() => {
+        if (this.connected && !this.closing) {
+          this.maybeStartTour();
+        }
+      }, 900);
       // 让主窗口能探测到这个会话：关闭主窗口前会据此提示「会断开全部连接」
       this.aliveResponder.start(this.params.host);
       if (this.isPc) {
@@ -1213,16 +1414,18 @@ export struct SessionPage {
           // 自绘华为商标又有上架审核风险，圆环是最接近且安全的表达
           if (this.isPc) {
             ToolButton({ symbol: $r('sys.symbol.circle'), label: '回鸿蒙', active: false,
-              bold: true, iconSize: 20,
+              bold: true, iconSize: 20, highlight: this.tourKey() === 'home',
               action: () => { this.minimizeWindow(); } })
           }
           // PC/2in1 有物理键鼠，隐藏触摸相关的软件控制（键盘/触控板/复位）
           if (!this.isPc) {
             ToolButton({ symbol: $r('sys.symbol.keyboard'), label: '键盘',
               active: this.softKb || this.keyboardShown,
+              highlight: this.tourKey() === 'keyboard',
               action: () => { this.toggleKeyboard(); } })
             ToolButton({ symbol: $r('sys.symbol.hand_point_up_tap_fill'),
               label: this.trackpadMode ? '触控板' : '直接触摸', active: this.trackpadMode,
+              highlight: this.tourKey() === 'touch',
               action: () => {
                 this.trackpadMode = !this.trackpadMode;
                 hmrdp.setTouchMode(this.trackpadMode);
@@ -1232,6 +1435,7 @@ export struct SessionPage {
               } })
             // 复位 = 把双指缩放/平移、以及键盘挡住时上推的画面一并恢复原位
             ToolButton({ symbol: $r('sys.symbol.arrow_counterclockwise'), label: '复位', active: false,
+              highlight: this.tourKey() === 'reset',
               action: () => { this.resetView(); } })
           }
           // 系统键：所有设备都显示——PC 上物理 Win/系统组合键被鸿蒙拦截，只能靠它代发
@@ -1244,6 +1448,9 @@ export struct SessionPage {
               .fontColor(Color.White)
           }
           .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+          .borderRadius(10)
+          .backgroundColor(this.tourKey() === 'syskeys' ? '#334DA3FF' : Color.Transparent)
+          .border({ width: this.tourKey() === 'syskeys' ? 1.5 : 0, color: '#4DA3FF' })
           .bindMenu(this.systemKeysMenu())
           // 多显示器（外接屏/投屏）：选择把会话窗口放到哪块屏上
           if (this.isPc && this.displays.length > 1) {
@@ -1256,6 +1463,9 @@ export struct SessionPage {
                 .fontColor(Color.White)
             }
             .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .borderRadius(10)
+            .backgroundColor(this.tourKey() === 'display' ? '#334DA3FF' : Color.Transparent)
+            .border({ width: this.tourKey() === 'display' ? 1.5 : 0, color: '#4DA3FF' })
             .bindMenu(this.displayMenu())
           }
           // 全屏切换：仅手机/平板；PC 会话窗口由 SessionAbility 统一全屏管理
@@ -1264,15 +1474,18 @@ export struct SessionPage {
               symbol: this.fullscreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left')
                                       : $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
               label: this.fullscreen ? '退出全屏' : '全屏', active: this.fullscreen,
+              highlight: this.tourKey() === 'fullscreen',
               action: () => { this.toggleFullscreen(); } })
           }
           ToolButton({ symbol: $r('sys.symbol.xmark'), label: '断开', active: false,
+            highlight: this.tourKey() === 'disconnect',
             action: () => { this.leave(''); } })
         }
       }
       ToolButton({
         symbol: this.toolbarExpanded ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'),
         label: this.toolbarExpanded ? '收起' : '展开', active: false,
+        highlight: this.tourKey() === 'collapse',
         action: () => { this.toolbarExpanded = !this.toolbarExpanded; } })
     }
     .backgroundColor('#B3000000')
@@ -1436,6 +1649,10 @@ export struct SessionPage {
 
         if (this.connected && this.showPanTip) {
           this.panTip()
+        }
+
+        if (this.connected && this.tourStep >= 0 && this.tourStep < this.tourList.length) {
+          this.toolbarTour()
         }
 
         if (!this.connected) {

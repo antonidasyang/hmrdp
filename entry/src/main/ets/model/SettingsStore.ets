@@ -5,6 +5,7 @@ import { KeyCode } from '@kit.InputKit';
 const PREF_NAME = 'hmrdp_settings';
 const KEY_DESKTOP_HOTKEY = 'desktop_hotkey';
 const KEY_PAN_TIP_SEEN = 'pan_tip_seen';
+const KEY_TOOLBAR_TOUR_SEEN = 'toolbar_tour_seen';
 
 /** 修饰键位掩码，与原生 setDesktopHotkey 的约定一致（不含 Win：鸿蒙优先抢占，且会话中要转发给远端） */
 export const MOD_CTRL = 1;
@@ -157,6 +158,17 @@ export class SettingsStore {
   static markPanTipSeen(context: common.Context): void {
     const p = SettingsStore.prefs(context);
     p.putSync(KEY_PAN_TIP_SEEN, true);
+    p.flush();
+  }
+
+  /** 工具条按钮逐个解说的引导是否已经走过（首次连接成功时走一次） */
+  static isToolbarTourSeen(context: common.Context): boolean {
+    return SettingsStore.prefs(context).getSync(KEY_TOOLBAR_TOUR_SEEN, false) as boolean;
+  }
+
+  static markToolbarTourSeen(context: common.Context): void {
+    const p = SettingsStore.prefs(context);
+    p.putSync(KEY_TOOLBAR_TOUR_SEEN, true);
     p.flush();
   }
 }
