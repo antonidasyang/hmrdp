@@ -836,9 +836,23 @@ export struct SessionPage {
   private buildTourSteps(): TourStep[] {
     const steps: TourStep[] = [];
     if (this.isPc) {
+      // 全屏会话里物理键盘被整个拦下转发给远端，鸿蒙自己的快捷键都不生效，
+      // 这个热键是唯一的键盘出口——不明说用户根本不知道有它
+      let hkText = '';
+      try {
+        const hk = SettingsStore.loadDesktopHotkey(this.ctx());
+        if (hk.enabled && hk.mods !== 0 && hk.keyCode !== 0) {
+          hkText = hotkeyLabel(hk);
+        }
+      } catch (e) {
+      }
       // PC 有物理键鼠，工具条上只有这几颗，也不需要讲触摸手势
       steps.push(tstep('home', $r('sys.symbol.circle'), '回鸿蒙',
-        '回到鸿蒙桌面，远程连接不会断开，从任务栏点回来就能接着用。'));
+        '回到鸿蒙桌面，远程连接不会断开，从任务栏点回来就能接着用。'
+        + (hkText.length > 0
+          ? `\n全屏会话里键盘整个转发给远端，鸿蒙的系统快捷键都不生效，所以也可以直接按 `
+            + `${hkText} 最小化回桌面（组合键可在设置里改）。`
+          : '\n提示：设置里可以配一个「返回桌面」热键，全屏会话中直接按键最小化。')));
       steps.push(tstep('syskeys', $r('sys.symbol.gearshape'), '系统键',
         '发送被鸿蒙拦下、传不到远端的组合键：Win、Win+D、Ctrl+Alt+Del、Alt+Tab 等。'));
       if (this.displays.length > 1) {
