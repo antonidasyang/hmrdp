@@ -251,6 +251,32 @@ export struct SettingsPage {
             .fontSize(12)
             .fontColor($r('sys.color.font_tertiary'))
             .alignSelf(ItemAlign.Start)
+
+          Column({ space: 10 }) {
+            Text('新手引导')
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .alignSelf(ItemAlign.Start)
+            Button('重新观看新手引导')
+              .buttonStyle(ButtonStyleMode.NORMAL)
+              .alignSelf(ItemAlign.Start)
+              .onClick(() => {
+                try {
+                  SettingsStore.resetGuides(this.ctx());
+                  promptAction.showToast({ message: '下次连接电脑时会重新讲一遍' });
+                } catch (e) {
+                  promptAction.showToast({ message: '重置失败，请重试' });
+                }
+              })
+            Text('首次连接电脑时会逐个介绍会话工具条上的按钮、键盘和手势。点上面的按钮可以再看一遍。')
+              .fontSize(12)
+              .fontColor($r('sys.color.font_tertiary'))
+              .alignSelf(ItemAlign.Start)
+          }
+          .width('100%')
+          .padding(14)
+          .borderRadius(12)
+          .backgroundColor($r('sys.color.comp_background_list_card'))
         }
         .padding(16)
         .width('100%')

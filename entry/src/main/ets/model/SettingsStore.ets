@@ -161,6 +161,14 @@ export class SettingsStore {
     p.flush();
   }
 
+  /** 清掉新手引导的已读标记，下次连接会重新走一遍（设置页里可手动触发） */
+  static resetGuides(context: common.Context): void {
+    const p = SettingsStore.prefs(context);
+    p.putSync(KEY_TOOLBAR_TOUR_SEEN, false);
+    p.putSync(KEY_PAN_TIP_SEEN, false);
+    p.flush();
+  }
+
   /** 工具条按钮逐个解说的引导是否已经走过（首次连接成功时走一次） */
   static isToolbarTourSeen(context: common.Context): boolean {
     return SettingsStore.prefs(context).getSync(KEY_TOOLBAR_TOUR_SEEN, false) as boolean;
