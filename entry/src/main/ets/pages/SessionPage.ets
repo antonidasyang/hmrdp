@@ -16,6 +16,12 @@ import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
 import { inputConsumer, KeyCode } from '@kit.InputKit';
 import { SessionAliveResponder } from '../model/SessionProbe';
 
+/** 长按多久算右键（ms）。带进度圈反馈，所以可以给足时间不误触 */
+const LONG_PRESS_MS = 2000;
+/** 长按期间允许的手指抖动（vp）。原生判定拖拽的阈值是 14px，这里取相近值，
+ *  免得出现「原生已经在拖、ArkTS 还在给长按计时」的夹缝 */
+const LONG_PRESS_SLOP = 8;
+
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
 
@@ -205,6 +211,16 @@ export struct SessionPage {
   @State imeBarFolded: boolean = false;
   /** 首次弹出键盘时的操作引导（双指拖动画面），看过一次就不再出现 */
   @State showPanTip: boolean = false;
+  // 长按出右键：进度圈画在手指处（窗口坐标），计时满了由原生按当前模式决定右键落点
+  @State pressing: boolean = false;
+  @State pressPct: number = 0;
+  @State pressCx: number = 0;
+  @State pressCy: number = 0;
+  private pressTimer: number = -1;
+  private pressOx: number = 0; // 按下点（surface 本地 vp），用来判抖动和传给原生
+  private pressOy: number = 0;
+  private pressStartX: number = 0;
+  private pressStartY: number = 0;
   /** 首次连接成功后的新手引导：先逐个讲工具条按钮，再引导点开键盘，最后讲手势。
    *  -1 = 不在引导中 */
   @State tourStep: number = -1;
@@ -219,6 +235,9 @@ export struct SessionPage {
   };
   private viewW: number = 0;
   private viewH: number = 0;
+  // XComponent 在窗口中的左上角；长按进度圈拿 windowX/Y 定位，得减掉它
+  private viewGx: number = 0;
+  private viewGy: number = 0;
   // 滚轮：不足一档的余量（单位＝档），以及首个事件学到的“一档轴值”
   private wheelAccum: number = 0;
   private wheelUnit: number = 0;
@@ -829,6 +848,80 @@ export struct SessionPage {
     if (this.stickyMods !== 0) {
       this.stickyMods = 0; // 粘滞只作用于下一个键
     }
+  }
+
+  // ---- 长按 = 右键（两种触摸模式都适用；双指轻点那条路照旧保留）----
+
+  /** XComponent 的触摸监听。只做长按计时，不消费事件——真正的触摸->鼠标映射仍在原生侧，
+   *  这里若用手势识别器（PanGesture 之类）会打乱原生的事件投递 */
+  private onSurfaceTouch(event: TouchEvent): void {
+    if (this.isPc) {
+      return; // PC 有物理鼠标右键
+    }
+    if (event.type === TouchType.Down) {
+      if (event.touches.length > 1) {
+        this.cancelLongPress(); // 多指是缩放/滚动，不是长按
+        return;
+      }
+      const t = event.touches[0];
+      this.startLongPress(t.x, t.y, t.windowX, t.windowY);
+    } else if (event.type === TouchType.Move) {
+      if (!this.pressing) {
+        return;
+      }
+      if (event.touches.length > 1) {
+        this.cancelLongPress();
+        return;
+      }
+      const t = event.touches[0];
+      if (Math.abs(t.x - this.pressStartX) > LONG_PRESS_SLOP ||
+        Math.abs(t.y - this.pressStartY) > LONG_PRESS_SLOP) {
+        this.cancelLongPress();
+      }
+    } else {
+      this.cancelLongPress(); // Up / Cancel
+    }
+  }
+
+  private startLongPress(x: number, y: number, wx: number, wy: number): void {
+    this.cancelLongPress();
+    this.pressStartX = x;
+    this.pressStartY = y;
+    this.pressOx = x;
+    this.pressOy = y;
+    this.pressCx = wx - this.viewGx;
+    this.pressCy = wy - this.viewGy;
+    this.pressPct = 0;
+    this.pressing = true;
+    const stepMs = 40;
+    this.pressTimer = setInterval(() => {
+      this.pressPct = this.pressPct + (stepMs * 100) / LONG_PRESS_MS;
+      if (this.pressPct >= 100) {
+        this.fireLongPress();
+      }
+    }, stepMs);
+  }
+
+  private fireLongPress(): void {
+    const px = this.getUIContext().vp2px(this.pressOx);
+    const py = this.getUIContext().vp2px(this.pressOy);
+    this.cancelLongPress();
+    try {
+      hmrdp.sendLongPressRightClick(px, py);
+    } catch (e) {
+      // 旧 .so 没有这个导出，忽略
+    }
+  }
+
+  private cancelLongPress(): void {
+    if (this.pressTimer >= 0) {
+      clearInterval(this.pressTimer);
+      this.pressTimer = -1;
+    }
+    if (this.pressing) {
+      this.pressing = false;
+    }
+    this.pressPct = 0;
   }
 
   // ---- 首次连接后的新手引导 ----
@@ -1531,9 +1624,12 @@ export struct SessionPage {
           .defaultFocus(true)
           .scale({ x: this.viewScale, y: this.viewScale })
           .translate({ x: this.offsetX, y: this.offsetY - this.kbShift })
+          .onTouch((event: TouchEvent) => { this.onSurfaceTouch(event); })
           .onAreaChange((_o: Area, n: Area) => {
             this.viewW = n.width as number;
             this.viewH = n.height as number;
+            this.viewGx = n.globalPosition.x as number;
+            this.viewGy = n.globalPosition.y as number;
             console.info(`HMRDP view area ${this.viewW}x${this.viewH}vp`);
           })
           .onLoad(() => {
@@ -1672,6 +1768,19 @@ export struct SessionPage {
           this.sessionToolbar()
         }
 
+        // 长按进度圈：画在手指处，转满一圈即右键。hitTestBehavior 必须放行触摸，
+        // 否则它一出现就把后续的 Move/Up 挡在外面，长按永远取消不掉
+        if (this.connected && this.pressing) {
+          Progress({ value: this.pressPct, total: 100, type: ProgressType.Ring })
+            .width(46)
+            .height(46)
+            .color('#4DA3FF')
+            .backgroundColor('#59FFFFFF')
+            .style({ strokeWidth: 3 })
+            .hitTestBehavior(HitTestMode.None)
+            .position({ x: this.pressCx - 23, y: this.pressCy - 23 })
+        }
+
         if (this.connected && this.showPanTip) {
           this.panTip()
         }
@@ -1760,6 +1869,7 @@ export struct SessionPage {
         }
       }
       this.softKb = false;
+      this.cancelLongPress();
       this.aliveResponder.stop();
       this.teardownClipboard();
       this.teardownKeyInterception();

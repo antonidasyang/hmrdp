@@ -765,6 +765,29 @@ napi_value SetTouchMode(napi_env env, napi_callback_info info)
     return undefined;
 }
 
+// sendLongPressRightClick(surfaceX, surfaceY) — 长按计时满，发一次右键
+// （计时与进度圈在 ArkTS 侧做，原生只管按当前模式决定右键落点）
+napi_value SendLongPressRightClick(napi_env env, napi_callback_info info)
+{
+    size_t argc = 2;
+    napi_value args[2] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    double x = 0;
+    double y = 0;
+    if (argc >= 2) {
+        napi_get_value_double(env, args[0], &x);
+        napi_get_value_double(env, args[1], &y);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_touchMapper.LongPressRightClick(static_cast<float>(x), static_cast<float>(y),
+                                          CurrentSession());
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 // setGestureActive(active: boolean) — 缩放/平移期间抑制触摸转鼠标
 napi_value SetGestureActive(napi_env env, napi_callback_info info)
 {
@@ -1109,6 +1132,8 @@ napi_value Init(napi_env env, napi_value exports)
         { "respondCert", nullptr, RespondCert, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setGestureActive", nullptr, SetGestureActive, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setTouchMode", nullptr, SetTouchMode, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "sendLongPressRightClick", nullptr, SendLongPressRightClick, nullptr, nullptr, nullptr,
+          napi_default, nullptr },
         { "requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setClipboardImage", nullptr, SetClipboardImage, nullptr, nullptr, nullptr, napi_default, nullptr },

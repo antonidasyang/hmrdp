@@ -52,6 +52,27 @@ void TouchMapper::Cancel(RdpSession* session)
     Reset();
 }
 
+void TouchMapper::LongPressRightClick(float surfaceX, float surfaceY, RdpSession* session)
+{
+    if (!session)
+        return;
+    // 原生的拖拽判定阈值比 ArkTS 侧的抖动容差小，可能已经落了左键进入拖拽。
+    // 用 Cancel 而不是 Reset：它会把按下的左键补抬起来，否则远端一直以为左键按着
+    Cancel(session);
+    if (trackpad_) {
+        // 触控板模式手指不在指针处，右键要落在指针那儿
+        SyncCursor(session);
+        session->SendPointerDesktop(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON2, (uint16_t)cursorX_,
+                                    (uint16_t)cursorY_);
+        session->SendPointerDesktop(PTR_FLAGS_BUTTON2, (uint16_t)cursorX_, (uint16_t)cursorY_);
+    } else {
+        session->SendPointer(PTR_FLAGS_MOVE, surfaceX, surfaceY);
+        session->SendPointer(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON2, surfaceX, surfaceY);
+        session->SendPointer(PTR_FLAGS_BUTTON2, surfaceX, surfaceY);
+    }
+    // Cancel 已把 mode_ 复位成 Idle，抬起时不会再走「轻点=左键」那条分支
+}
+
 void TouchMapper::SyncCursor(RdpSession* session)
 {
     uint32_t x = 0;

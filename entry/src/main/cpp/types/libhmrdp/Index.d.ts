@@ -59,6 +59,10 @@ export const respondCert: (decision: number) => void;
 export const setGestureActive: (active: boolean) => void;
 /** 触摸操作模式：false 直接触摸（点哪是哪），true 触控板（相对指针） */
 export const setTouchMode: (trackpad: boolean) => void;
+
+/** 长按计时满：在当前位置发一次右键（坐标为 surface 像素；触控板模式下忽略坐标，
+ *  右键落在虚拟指针处）。发完本次触摸序列作废，抬起时不再补左键单击。 */
+export const sendLongPressRightClick: (surfaceX: number, surfaceY: number) => void;
 export const getVersion: () => string;
 /** 发送一个 UTF-16 码元（按下+抬起），用于软键盘文本输入 */
 export const sendUnicode: (utf16Unit: number) => void;

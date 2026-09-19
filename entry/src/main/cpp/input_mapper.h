@@ -24,6 +24,9 @@ public:
     void Reset();
     // ArkUI 手势接管触摸时调用：拖拽中已按下的左键要补抬起，否则远端一直按着
     void Cancel(RdpSession* session);
+    // ArkTS 侧长按计时满：在当前位置发一次右键。直接触摸模式落在手指处，触控板模式落在
+    // 虚拟指针处。发完作废本次触摸序列，抬起时不再补那一下左键单击
+    void LongPressRightClick(float surfaceX, float surfaceY, RdpSession* session);
     bool IsTrackpad() const { return trackpad_; }
     // false = 直接触摸模式，true = 触控板（相对指针）模式
     void SetTrackpadMode(bool trackpad);
