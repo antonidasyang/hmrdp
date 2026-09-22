@@ -920,7 +920,9 @@ export struct SessionPage {
     const bucket = Math.floor(hold.ms / 500);
     if (bucket !== this.holdBucket) {
       this.holdBucket = bucket;
-      console.info(`HMRDP longpress holding ${hold.ms.toFixed(0)}ms at ${hold.x.toFixed(0)},${hold.y.toFixed(0)}px`);
+      if (bucket >= 1) { // 普通点击不记，只留真正按住的过程
+        console.info(`HMRDP longpress holding ${hold.ms.toFixed(0)}ms`);
+      }
     }
     if (hold.ms < HOLD_SHOW_MS) {
       return; // 还够不上长按，别让普通点击闪圈

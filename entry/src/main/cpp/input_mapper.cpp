@@ -16,7 +16,9 @@ namespace {
 constexpr float kTapSlopPx = 14.0f;          // 超过则视为拖动
 constexpr int64_t kTapTimeoutNs = 400000000; // 400ms 内抬起才算轻点
 constexpr float kWheelStepPx = 32.0f;        // 每滑动 32px 发一档滚轮
-constexpr float kHoldSlopPx = 72.0f;         // 长按允许的手指漂移，比拖拽阈值宽松得多
+// 长按允许的手指漂移。实测按住两秒时手指无意识位移常到 80px 上下，给到 120px
+// （约 1cm）才不会动不动就被掐断；真要拖动的话位移远不止这个数，不会误判
+constexpr float kHoldSlopPx = 120.0f;
 
 int64_t NowMonoNs()
 {
