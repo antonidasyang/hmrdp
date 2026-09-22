@@ -24,14 +24,15 @@ interface HmTouchHold {
 }
 
 /** 长按多久算右键（ms） */
-const LONG_PRESS_MS = 1500;
+const LONG_PRESS_MS = 1000;
 /** 轮询按住状态的间隔（ms）。漂移判定在原生侧做，这里只负责画圈。
  *  40ms ≈ 25fps，圆环转起来才顺；一次 napi 调用的开销可以忽略 */
 const HOLD_POLL_MS = 40;
-/** 按住超过这个时间才画圈：否则每次普通点击都会闪一下进度圈 */
-const HOLD_SHOW_MS = 300;
+/** 按住超过这个时间才画圈：否则每次普通点击都会闪一下进度圈。
+ *  总时长缩到 1s 后这个门槛也要跟着降，不然圈只剩很短一段可转 */
+const HOLD_SHOW_MS = 200;
 /** 计时指示的直径（vp） */
-const RING_D = 56;
+const RING_D = 28;
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -1834,11 +1835,11 @@ export struct SessionPage {
               .borderRadius(RING_D / 2)
               .backgroundColor('#B3000000')
             Progress({ value: this.pressPct, total: 100, type: ProgressType.Ring })
-              .width(RING_D - 14)
-              .height(RING_D - 14)
+              .width(RING_D - 8)
+              .height(RING_D - 8)
               .color('#4DA3FF')
               .backgroundColor('#40FFFFFF')
-              .style({ strokeWidth: 4 })
+              .style({ strokeWidth: 3 })
           }
           .width(RING_D)
           .height(RING_D)
