@@ -39,6 +39,8 @@ uint32_t CountPressed(const OH_NativeXComponent_TouchEvent& event)
 
 void TouchMapper::Reset()
 {
+    if (holding_)
+        HMLOGI("longpress: Reset() 清掉了按住状态");
     holding_ = false; // 触发过长按/被接管后别再让轮询读到同一次按住
     mode_ = Mode::Idle;
     scrollResidual_ = 0;
@@ -130,6 +132,14 @@ int64_t TouchMapper::HoldDurationNs(float& outX, float& outY) const
 void TouchMapper::UpdateHold(const OH_NativeXComponent_TouchEvent& event)
 {
     const uint32_t pressed = CountPressed(event);
+    // 0=DOWN 1=UP 2=MOVE 3=CANCEL。holding_ 在按下后极短时间内就被清掉，
+    // 得看清紧跟 DOWN 之后到达的究竟是 UP 还是 CANCEL
+    if (holdLogged_ < 40) {
+        holdLogged_++;
+        HMLOGI("longpress: 事件 type=%{public}d pressed=%{public}u holding=%{public}d "
+               "pos=(%{public}.0f,%{public}.0f)",
+               static_cast<int>(event.type), pressed, holding_ ? 1 : 0, event.x, event.y);
+    }
     switch (event.type) {
         case OH_NATIVEXCOMPONENT_DOWN:
             if (pressed == 1) {
@@ -137,10 +147,6 @@ void TouchMapper::UpdateHold(const OH_NativeXComponent_TouchEvent& event)
                 holdX_ = event.x;
                 holdY_ = event.y;
                 holdDrift_ = 0;
-                if (holdLogged_ < 3) {
-                    holdLogged_++;
-                    HMLOGI("longpress: 原生收到按下 (%{public}.0f,%{public}.0f)", event.x, event.y);
-                }
                 // 用自己取的单调时钟，不用 event.timeStamp：两者时基未必一致
                 holdStartNs_ = NowMonoNs();
             } else {
