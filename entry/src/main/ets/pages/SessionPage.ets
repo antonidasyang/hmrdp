@@ -227,6 +227,9 @@ export struct SessionPage {
   private holdTimer: number = -1;
   private holdLastMs: number = 0;
   private holdBucket: number = -1;
+  /** 屏幕像素密度，进入会话时取一次。轮询回调里不碰 getUIContext()，免得它一抛异常
+   *  就把坐标计算整段跳过（表现为圈画在屏幕外、日志却照常打） */
+  private density: number = 3;
   private pressOx: number = 0; // 按下点（surface 像素），直接回传给原生
   private pressOy: number = 0;
   /** 首次连接成功后的新手引导：先逐个讲工具条按钮，再引导点开键盘，最后讲手势。
@@ -303,6 +306,13 @@ export struct SessionPage {
 
   aboutToAppear(): void {
     this.isPc = isPcDevice();
+    try {
+      const d = display.getDefaultDisplaySync().densityPixels;
+      if (d > 0) {
+        this.density = d;
+      }
+    } catch (e) {
+    }
     if (this.isPc) {
       hmrdp.setTouchEnabled(false); // PC 有物理键鼠，关掉 TouchMapper 避免和鼠标回调产生双击
       this.refreshDisplays();
@@ -907,19 +917,20 @@ export struct SessionPage {
     if (hold.ms < HOLD_SHOW_MS) {
       return; // 还够不上长按，别让普通点击闪圈
     }
-    if (!this.pressing) {
-      this.pressing = true;
-      this.pressOx = hold.x; // 原生要的是 surface 像素，原样留着
-      this.pressOy = hold.y;
-      console.info(`HMRDP longpress start at ${hold.x.toFixed(0)},${hold.y.toFixed(0)}px`);
-    }
-    // 圈要画在手指的实际屏幕位置：surface 本地坐标还要过一遍画面的缩放与平移
-    const lx = this.getUIContext().px2vp(hold.x);
-    const ly = this.getUIContext().px2vp(hold.y);
+    const lx = hold.x / this.density;
+    const ly = hold.y / this.density;
     const cx = this.viewW / 2;
     const cy = this.viewH / 2;
     this.pressCx = cx + (lx - cx) * this.viewScale + this.offsetX;
     this.pressCy = cy + (ly - cy) * this.viewScale + this.offsetY - this.kbShift;
+    if (!this.pressing) {
+      this.pressing = true;
+      this.pressOx = hold.x; // 原生要的是 surface 像素，原样留着
+      this.pressOy = hold.y;
+      console.info(`HMRDP longpress start at ${hold.x.toFixed(0)},${hold.y.toFixed(0)}px`
+        + ` -> 圈 ${this.pressCx.toFixed(0)},${this.pressCy.toFixed(0)}vp`
+        + ` view=${this.viewW.toFixed(0)}x${this.viewH.toFixed(0)} density=${this.density}`);
+    }
     this.pressPct = Math.min(100,
       ((hold.ms - HOLD_SHOW_MS) * 100) / (LONG_PRESS_MS - HOLD_SHOW_MS));
     if (hold.ms >= LONG_PRESS_MS) {
@@ -1794,14 +1805,21 @@ export struct SessionPage {
         // 长按进度圈：画在手指处，转满一圈即右键。hitTestBehavior 必须放行触摸，
         // 否则它一出现就把后续的 Move/Up 挡在外面，长按永远取消不掉
         if (this.connected && this.pressing) {
-          Progress({ value: this.pressPct, total: 100, type: ProgressType.Ring })
-            .width(46)
-            .height(46)
-            .color('#4DA3FF')
-            .backgroundColor('#59FFFFFF')
-            .style({ strokeWidth: 3 })
-            .hitTestBehavior(HitTestMode.None)
-            .position({ x: this.pressCx - 23, y: this.pressCy - 23 })
+          Stack() {
+            Circle()
+              .width(46)
+              .height(46)
+              .fill('#8C000000')
+            Progress({ value: this.pressPct, total: 100, type: ProgressType.Ring })
+              .width(38)
+              .height(38)
+              .color('#4DA3FF')
+              .backgroundColor('#40FFFFFF')
+          }
+          .width(46)
+          .height(46)
+          .hitTestBehavior(HitTestMode.None)
+          .position({ x: this.pressCx - 23, y: this.pressCy - 23 })
         }
 
         if (this.connected && this.showPanTip) {
