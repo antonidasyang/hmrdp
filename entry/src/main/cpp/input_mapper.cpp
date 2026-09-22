@@ -16,7 +16,7 @@ namespace {
 constexpr float kTapSlopPx = 14.0f;          // 超过则视为拖动
 constexpr int64_t kTapTimeoutNs = 400000000; // 400ms 内抬起才算轻点
 constexpr float kWheelStepPx = 32.0f;        // 每滑动 32px 发一档滚轮
-constexpr float kHoldSlopPx = 48.0f;         // 长按允许的手指漂移，比拖拽阈值宽松得多
+constexpr float kHoldSlopPx = 72.0f;         // 长按允许的手指漂移，比拖拽阈值宽松得多
 
 int64_t NowMonoNs()
 {
@@ -132,14 +132,6 @@ int64_t TouchMapper::HoldDurationNs(float& outX, float& outY) const
 void TouchMapper::UpdateHold(const OH_NativeXComponent_TouchEvent& event)
 {
     const uint32_t pressed = CountPressed(event);
-    // 0=DOWN 1=UP 2=MOVE 3=CANCEL。holding_ 在按下后极短时间内就被清掉，
-    // 得看清紧跟 DOWN 之后到达的究竟是 UP 还是 CANCEL
-    if (holdLogged_ < 40) {
-        holdLogged_++;
-        HMLOGI("longpress: 事件 type=%{public}d pressed=%{public}u holding=%{public}d "
-               "pos=(%{public}.0f,%{public}.0f)",
-               static_cast<int>(event.type), pressed, holding_ ? 1 : 0, event.x, event.y);
-    }
     switch (event.type) {
         case OH_NATIVEXCOMPONENT_DOWN:
             if (pressed == 1) {
@@ -155,10 +147,10 @@ void TouchMapper::UpdateHold(const OH_NativeXComponent_TouchEvent& event)
             break;
         case OH_NATIVEXCOMPONENT_MOVE:
             if (holding_) {
-                if (pressed != 1) {
-                    holding_ = false;
-                    break;
-                }
+                // 这里**不能**用 CountPressed 判手指数：实测 MOVE 事件里
+                // touchPoints[].isPressed 恒为 false（DOWN 时才是准的），照此判断的话
+                // 按下后的第一个 MOVE 就会把 holding_ 清掉，长按永远无法成立。
+                // 多指的情况由 DOWN 分支负责清除，这里只累计漂移。
                 const float dx = event.x - holdX_;
                 const float dy = event.y - holdY_;
                 const float d = std::sqrt(dx * dx + dy * dy);

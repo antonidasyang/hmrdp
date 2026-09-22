@@ -68,7 +68,6 @@ private:
     float holdY_ = 0;
     float holdDrift_ = 0;
     int64_t holdStartNs_ = 0;
-    int holdLogged_ = 0;
 };
 
 // 外接鼠标事件（含悬停移动）

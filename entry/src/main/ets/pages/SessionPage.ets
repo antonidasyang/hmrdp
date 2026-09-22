@@ -228,7 +228,6 @@ export struct SessionPage {
   private holdLastMs: number = 0;
   private holdBucket: number = -1;
   private holdErrLogged: number = 0;
-  private holdIdleLogMs: number = 0;
   /** 屏幕像素密度，进入会话时取一次。轮询回调里不碰 getUIContext()，免得它一抛异常
    *  就把坐标计算整段跳过（表现为圈画在屏幕外、日志却照常打） */
   private density: number = 3;
@@ -908,12 +907,6 @@ export struct SessionPage {
       return;
     }
     if (hold.ms < 0) {
-      // 每 2 秒证明一次「轮询在跑，只是原生说没人按住」，用来和「轮询根本没跑」区分开
-      const now = Date.now();
-      if (now - this.holdIdleLogMs > 2000) {
-        this.holdIdleLogMs = now;
-        console.info('HMRDP longpress 轮询中：原生报告当前无按住');
-      }
       if (this.pressing) {
         console.info(`HMRDP longpress 中断于 ${this.holdLastMs.toFixed(0)}ms（松手或漂移超限）`);
         this.cancelLongPress();
