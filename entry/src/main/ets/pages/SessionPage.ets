@@ -18,9 +18,10 @@ import { SessionAliveResponder } from '../model/SessionProbe';
 
 /** 长按多久算右键（ms）。带进度圈反馈，所以可以给足时间不误触 */
 const LONG_PRESS_MS = 2000;
-/** 长按期间允许的手指抖动（vp）。原生判定拖拽的阈值是 14px，这里取相近值，
- *  免得出现「原生已经在拖、ArkTS 还在给长按计时」的夹缝 */
-const LONG_PRESS_SLOP = 8;
+/** 长按期间允许的手指抖动（vp）。按住整整 2 秒，手指自然漂移很容易超过十几个像素——
+ *  容差给小了长按几乎必被中途取消。放宽到 18vp，代价是原生（14px 就判拖拽）可能已经
+ *  落了左键或挪了指针，这一点由 LongPressRightClick 里的 Cancel 兜底 */
+const LONG_PRESS_SLOP = 18;
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -221,6 +222,7 @@ export struct SessionPage {
   private pressOy: number = 0;
   private pressStartX: number = 0;
   private pressStartY: number = 0;
+  private touchLogged: number = 0;
   /** 首次连接成功后的新手引导：先逐个讲工具条按钮，再引导点开键盘，最后讲手势。
    *  -1 = 不在引导中 */
   @State tourStep: number = -1;
@@ -859,7 +861,11 @@ export struct SessionPage {
       return; // PC 有物理鼠标右键
     }
     if (event.type === TouchType.Down) {
-      if (event.touches.length > 1) {
+      if (this.touchLogged < 6) {
+        this.touchLogged++;
+        console.info(`HMRDP touch down fingers=${event.touches.length}`);
+      }
+      if (event.touches.length !== 1) {
         this.cancelLongPress(); // 多指是缩放/滚动，不是长按
         return;
       }
@@ -869,7 +875,7 @@ export struct SessionPage {
       if (!this.pressing) {
         return;
       }
-      if (event.touches.length > 1) {
+      if (event.touches.length !== 1) {
         this.cancelLongPress();
         return;
       }
@@ -893,6 +899,7 @@ export struct SessionPage {
     this.pressCy = wy - this.viewGy;
     this.pressPct = 0;
     this.pressing = true;
+    console.info(`HMRDP longpress start at ${x.toFixed(0)},${y.toFixed(0)}vp`);
     const stepMs = 40;
     this.pressTimer = setInterval(() => {
       this.pressPct = this.pressPct + (stepMs * 100) / LONG_PRESS_MS;
@@ -908,8 +915,11 @@ export struct SessionPage {
     this.cancelLongPress();
     try {
       hmrdp.sendLongPressRightClick(px, py);
+      console.info(`HMRDP longpress fire ${px.toFixed(0)},${py.toFixed(0)}px`);
     } catch (e) {
-      // 旧 .so 没有这个导出，忽略
+      // 别吞掉：.so 少了这个导出时，现象就是「圈转完了什么也没发生」
+      const err = e as BusinessError;
+      console.error(`HMRDP longpress 调用原生失败: code=${err.code} ${err.message}`);
     }
   }
 

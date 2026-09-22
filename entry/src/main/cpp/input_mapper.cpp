@@ -6,6 +6,7 @@
 #include <ace/xcomponent/native_xcomponent_key_event.h>
 
 #include "rdp_session.h"
+#include "hm_log.h"
 
 namespace hmrdp {
 
@@ -54,8 +55,12 @@ void TouchMapper::Cancel(RdpSession* session)
 
 void TouchMapper::LongPressRightClick(float surfaceX, float surfaceY, RdpSession* session)
 {
-    if (!session)
+    if (!session) {
+        HMLOGW("longpress: 无会话，右键未发出");
         return;
+    }
+    HMLOGI("longpress: surface=(%{public}.0f,%{public}.0f) trackpad=%{public}d mode=%{public}d",
+           surfaceX, surfaceY, trackpad_ ? 1 : 0, static_cast<int>(mode_));
     // 原生的拖拽判定阈值比 ArkTS 侧的抖动容差小，可能已经落了左键进入拖拽。
     // 用 Cancel 而不是 Reset：它会把按下的左键补抬起来，否则远端一直以为左键按着
     Cancel(session);
@@ -65,10 +70,12 @@ void TouchMapper::LongPressRightClick(float surfaceX, float surfaceY, RdpSession
         session->SendPointerDesktop(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON2, (uint16_t)cursorX_,
                                     (uint16_t)cursorY_);
         session->SendPointerDesktop(PTR_FLAGS_BUTTON2, (uint16_t)cursorX_, (uint16_t)cursorY_);
+        HMLOGI("longpress: 触控板，右键发到指针 (%{public}.0f,%{public}.0f)", cursorX_, cursorY_);
     } else {
         session->SendPointer(PTR_FLAGS_MOVE, surfaceX, surfaceY);
         session->SendPointer(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON2, surfaceX, surfaceY);
         session->SendPointer(PTR_FLAGS_BUTTON2, surfaceX, surfaceY);
+        HMLOGI("longpress: 直接触摸，右键发到手指处");
     }
     // Cancel 已把 mode_ 复位成 Idle，抬起时不会再走「轻点=左键」那条分支
 }
