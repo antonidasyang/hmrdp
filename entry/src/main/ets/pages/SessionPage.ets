@@ -27,6 +27,8 @@ interface HmTouchHold {
 const LONG_PRESS_MS = 2000;
 /** 轮询按住状态的间隔（ms）。漂移判定在原生侧做，这里只负责画圈 */
 const HOLD_POLL_MS = 60;
+/** 按住超过这个时间才画圈：否则每次普通点击都会闪一下进度圈 */
+const HOLD_SHOW_MS = 300;
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -223,6 +225,8 @@ export struct SessionPage {
   @State pressCx: number = 0;
   @State pressCy: number = 0;
   private holdTimer: number = -1;
+  private holdLastMs: number = 0;
+  private holdBucket: number = -1;
   private pressOx: number = 0; // 按下点（surface 像素），直接回传给原生
   private pressOy: number = 0;
   /** 首次连接成功后的新手引导：先逐个讲工具条按钮，再引导点开键盘，最后讲手势。
@@ -886,9 +890,22 @@ export struct SessionPage {
     }
     if (hold.ms < 0) {
       if (this.pressing) {
-        this.cancelLongPress(); // 松手了，或漂移超出原生的长按容差
+        console.info(`HMRDP longpress 中断于 ${this.holdLastMs.toFixed(0)}ms（松手或漂移超限）`);
+        this.cancelLongPress();
       }
+      this.holdLastMs = 0;
+      this.holdBucket = -1;
       return;
+    }
+    this.holdLastMs = hold.ms;
+    // 每 500ms 记一条，用来确认计时到底有没有在涨
+    const bucket = Math.floor(hold.ms / 500);
+    if (bucket !== this.holdBucket) {
+      this.holdBucket = bucket;
+      console.info(`HMRDP longpress holding ${hold.ms.toFixed(0)}ms at ${hold.x.toFixed(0)},${hold.y.toFixed(0)}px`);
+    }
+    if (hold.ms < HOLD_SHOW_MS) {
+      return; // 还够不上长按，别让普通点击闪圈
     }
     if (!this.pressing) {
       this.pressing = true;
@@ -903,7 +920,8 @@ export struct SessionPage {
     const cy = this.viewH / 2;
     this.pressCx = cx + (lx - cx) * this.viewScale + this.offsetX;
     this.pressCy = cy + (ly - cy) * this.viewScale + this.offsetY - this.kbShift;
-    this.pressPct = Math.min(100, (hold.ms * 100) / LONG_PRESS_MS);
+    this.pressPct = Math.min(100,
+      ((hold.ms - HOLD_SHOW_MS) * 100) / (LONG_PRESS_MS - HOLD_SHOW_MS));
     if (hold.ms >= LONG_PRESS_MS) {
       this.fireLongPress();
     }

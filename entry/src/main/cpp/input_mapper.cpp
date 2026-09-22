@@ -152,8 +152,13 @@ void TouchMapper::UpdateHold(const OH_NativeXComponent_TouchEvent& event)
                 const float dx = event.x - holdX_;
                 const float dy = event.y - holdY_;
                 const float d = std::sqrt(dx * dx + dy * dy);
-                if (d > holdDrift_)
+                if (d > holdDrift_) {
+                    const bool wasOk = holdDrift_ <= kHoldSlopPx;
                     holdDrift_ = d;
+                    if (wasOk && d > kHoldSlopPx)
+                        HMLOGI("longpress: 漂移 %{public}.0fpx 超出容差 %{public}.0f，长按取消",
+                               d, kHoldSlopPx);
+                }
             }
             break;
         default:
