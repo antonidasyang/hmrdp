@@ -137,6 +137,10 @@ void TouchMapper::UpdateHold(const OH_NativeXComponent_TouchEvent& event)
                 holdX_ = event.x;
                 holdY_ = event.y;
                 holdDrift_ = 0;
+                if (holdLogged_ < 3) {
+                    holdLogged_++;
+                    HMLOGI("longpress: 原生收到按下 (%{public}.0f,%{public}.0f)", event.x, event.y);
+                }
                 // 用自己取的单调时钟，不用 event.timeStamp：两者时基未必一致
                 holdStartNs_ = NowMonoNs();
             } else {

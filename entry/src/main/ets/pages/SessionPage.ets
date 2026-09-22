@@ -227,6 +227,8 @@ export struct SessionPage {
   private holdTimer: number = -1;
   private holdLastMs: number = 0;
   private holdBucket: number = -1;
+  private holdErrLogged: number = 0;
+  private holdIdleLogMs: number = 0;
   /** 屏幕像素密度，进入会话时取一次。轮询回调里不碰 getUIContext()，免得它一抛异常
    *  就把坐标计算整段跳过（表现为圈画在屏幕外、日志却照常打） */
   private density: number = 3;
@@ -881,6 +883,7 @@ export struct SessionPage {
       return; // PC 有物理鼠标右键
     }
     this.holdTimer = setInterval(() => { this.pollHold(); }, HOLD_POLL_MS);
+    console.info(`HMRDP longpress 轮询已启动 interval=${HOLD_POLL_MS}ms`);
   }
 
   private stopHoldPoll(): void {
@@ -896,9 +899,21 @@ export struct SessionPage {
     try {
       hold = hmrdp.getTouchHold() as HmTouchHold;
     } catch (e) {
+      // 别再静默吞：.so 没跟着重编时，这里一直抛，现象就是「长按毫无动静、日志全无」
+      if (this.holdErrLogged < 3) {
+        this.holdErrLogged++;
+        const err = e as BusinessError;
+        console.error(`HMRDP longpress getTouchHold 失败: code=${err.code} ${err.message}`);
+      }
       return;
     }
     if (hold.ms < 0) {
+      // 每 2 秒证明一次「轮询在跑，只是原生说没人按住」，用来和「轮询根本没跑」区分开
+      const now = Date.now();
+      if (now - this.holdIdleLogMs > 2000) {
+        this.holdIdleLogMs = now;
+        console.info('HMRDP longpress 轮询中：原生报告当前无按住');
+      }
       if (this.pressing) {
         console.info(`HMRDP longpress 中断于 ${this.holdLastMs.toFixed(0)}ms（松手或漂移超限）`);
         this.cancelLongPress();
