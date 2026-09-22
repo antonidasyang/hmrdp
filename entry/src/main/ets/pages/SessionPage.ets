@@ -23,10 +23,11 @@ interface HmTouchHold {
   y: number;
 }
 
-/** 长按多久算右键（ms）。带进度圈反馈，所以可以给足时间不误触 */
-const LONG_PRESS_MS = 2000;
-/** 轮询按住状态的间隔（ms）。漂移判定在原生侧做，这里只负责画圈 */
-const HOLD_POLL_MS = 60;
+/** 长按多久算右键（ms） */
+const LONG_PRESS_MS = 1500;
+/** 轮询按住状态的间隔（ms）。漂移判定在原生侧做，这里只负责画圈。
+ *  40ms ≈ 25fps，圆环转起来才顺；一次 napi 调用的开销可以忽略 */
+const HOLD_POLL_MS = 40;
 /** 按住超过这个时间才画圈：否则每次普通点击都会闪一下进度圈 */
 const HOLD_SHOW_MS = 300;
 /** 计时指示的直径（vp） */
@@ -950,11 +951,6 @@ export struct SessionPage {
     }
   }
 
-  /** 内部蓝点直径：随进度从 10 涨到 RING_D-14 */
-  private ringDot(): number {
-    return 10 + ((RING_D - 24) * this.pressPct) / 100;
-  }
-
   /** 指示圈的纵向位置：默认落在手指上方，贴近屏幕顶部时改画到下方 */
   private ringY(): number {
     const above = this.pressCy - RING_D - 34;
@@ -1831,19 +1827,18 @@ export struct SessionPage {
         // 画在按下点正中会被手指整个盖住（这正是之前「坐标没错却看不见」的原因）
         if (this.connected && this.pressing) {
           Stack() {
+            // 深色底盘：保证圆环在任何画面上都看得清
             Column()
               .width(RING_D)
               .height(RING_D)
               .borderRadius(RING_D / 2)
               .backgroundColor('#B3000000')
-              .border({ width: 2, color: '#66FFFFFF' })
-            // 进度用内部蓝点由小涨到大，只用 Column+borderRadius，
-            // 不依赖 Shape/Progress 这类组件，渲染上最没有意外
-            Column()
-              .width(this.ringDot())
-              .height(this.ringDot())
-              .borderRadius(this.ringDot() / 2)
-              .backgroundColor('#4DA3FF')
+            Progress({ value: this.pressPct, total: 100, type: ProgressType.Ring })
+              .width(RING_D - 14)
+              .height(RING_D - 14)
+              .color('#4DA3FF')
+              .backgroundColor('#40FFFFFF')
+              .style({ strokeWidth: 4 })
           }
           .width(RING_D)
           .height(RING_D)
