@@ -29,6 +29,8 @@ const LONG_PRESS_MS = 2000;
 const HOLD_POLL_MS = 60;
 /** 按住超过这个时间才画圈：否则每次普通点击都会闪一下进度圈 */
 const HOLD_SHOW_MS = 300;
+/** 计时指示的直径（vp） */
+const RING_D = 56;
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -948,6 +950,17 @@ export struct SessionPage {
     }
   }
 
+  /** 内部蓝点直径：随进度从 10 涨到 RING_D-14 */
+  private ringDot(): number {
+    return 10 + ((RING_D - 24) * this.pressPct) / 100;
+  }
+
+  /** 指示圈的纵向位置：默认落在手指上方，贴近屏幕顶部时改画到下方 */
+  private ringY(): number {
+    const above = this.pressCy - RING_D - 34;
+    return above > 6 ? above : this.pressCy + 34;
+  }
+
   private fireLongPress(): void {
     const px = this.pressOx;
     const py = this.pressOy;
@@ -1814,22 +1827,28 @@ export struct SessionPage {
 
         // 长按进度圈：画在手指处，转满一圈即右键。hitTestBehavior 必须放行触摸，
         // 否则它一出现就把后续的 Move/Up 挡在外面，长按永远取消不掉
+        // 长按计时指示。画在手指**上方**：直径 56vp 跟指腹接触面积差不多，
+        // 画在按下点正中会被手指整个盖住（这正是之前「坐标没错却看不见」的原因）
         if (this.connected && this.pressing) {
           Stack() {
-            Circle()
-              .width(46)
-              .height(46)
-              .fill('#8C000000')
-            Progress({ value: this.pressPct, total: 100, type: ProgressType.Ring })
-              .width(38)
-              .height(38)
-              .color('#4DA3FF')
-              .backgroundColor('#40FFFFFF')
+            Column()
+              .width(RING_D)
+              .height(RING_D)
+              .borderRadius(RING_D / 2)
+              .backgroundColor('#B3000000')
+              .border({ width: 2, color: '#66FFFFFF' })
+            // 进度用内部蓝点由小涨到大，只用 Column+borderRadius，
+            // 不依赖 Shape/Progress 这类组件，渲染上最没有意外
+            Column()
+              .width(this.ringDot())
+              .height(this.ringDot())
+              .borderRadius(this.ringDot() / 2)
+              .backgroundColor('#4DA3FF')
           }
-          .width(46)
-          .height(46)
+          .width(RING_D)
+          .height(RING_D)
           .hitTestBehavior(HitTestMode.None)
-          .position({ x: this.pressCx - 23, y: this.pressCy - 23 })
+          .position({ x: this.pressCx - RING_D / 2, y: this.ringY() })
         }
 
         if (this.connected && this.showPanTip) {
