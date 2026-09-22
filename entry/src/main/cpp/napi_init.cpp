@@ -765,6 +765,37 @@ napi_value SetTouchMode(napi_env env, napi_callback_info info)
     return undefined;
 }
 
+// getTouchHold() -> { ms, x, y } — 当前单指按住且未明显漂移的毫秒数（ms<0 表示没有），
+// 以及按下点的 surface 像素坐标。ArkTS 轮询它来画长按进度圈：XComponent 挂了 native
+// 渲染之后，ArkUI 侧的 onTouch 收不到触摸事件，只有原生这条回调是通的
+napi_value GetTouchHold(napi_env env, napi_callback_info info)
+{
+    double ms = -1;
+    double hx = 0;
+    double hy = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        float x = 0;
+        float y = 0;
+        const int64_t ns = g_touchEnabled.load() ? g_touchMapper.HoldDurationNs(x, y) : -1;
+        if (ns >= 0) {
+            ms = static_cast<double>(ns) / 1000000.0;
+            hx = x;
+            hy = y;
+        }
+    }
+    napi_value obj = nullptr;
+    napi_create_object(env, &obj);
+    napi_value v = nullptr;
+    napi_create_double(env, ms, &v);
+    napi_set_named_property(env, obj, "ms", v);
+    napi_create_double(env, hx, &v);
+    napi_set_named_property(env, obj, "x", v);
+    napi_create_double(env, hy, &v);
+    napi_set_named_property(env, obj, "y", v);
+    return obj;
+}
+
 // sendLongPressRightClick(surfaceX, surfaceY) — 长按计时满，发一次右键
 // （计时与进度圈在 ArkTS 侧做，原生只管按当前模式决定右键落点）
 napi_value SendLongPressRightClick(napi_env env, napi_callback_info info)
@@ -1134,6 +1165,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "setTouchMode", nullptr, SetTouchMode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sendLongPressRightClick", nullptr, SendLongPressRightClick, nullptr, nullptr, nullptr,
           napi_default, nullptr },
+        { "getTouchHold", nullptr, GetTouchHold, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setClipboardImage", nullptr, SetClipboardImage, nullptr, nullptr, nullptr, napi_default, nullptr },

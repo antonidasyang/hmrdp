@@ -1,6 +1,7 @@
 #include "input_mapper.h"
 
 #include <cmath>
+#include <ctime>
 
 #include <freerdp/input.h>
 #include <ace/xcomponent/native_xcomponent_key_event.h>
@@ -15,6 +16,14 @@ namespace {
 constexpr float kTapSlopPx = 14.0f;          // 超过则视为拖动
 constexpr int64_t kTapTimeoutNs = 400000000; // 400ms 内抬起才算轻点
 constexpr float kWheelStepPx = 32.0f;        // 每滑动 32px 发一档滚轮
+constexpr float kHoldSlopPx = 48.0f;         // 长按允许的手指漂移，比拖拽阈值宽松得多
+
+int64_t NowMonoNs()
+{
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
+}
 
 uint32_t CountPressed(const OH_NativeXComponent_TouchEvent& event)
 {
@@ -30,6 +39,7 @@ uint32_t CountPressed(const OH_NativeXComponent_TouchEvent& event)
 
 void TouchMapper::Reset()
 {
+    holding_ = false; // 触发过长按/被接管后别再让轮询读到同一次按住
     mode_ = Mode::Idle;
     scrollResidual_ = 0;
     scrolled_ = false;
@@ -107,10 +117,56 @@ void TouchMapper::SendCursorMove(RdpSession* session)
     session->SendPointerDesktop(PTR_FLAGS_MOVE, (uint16_t)cursorX_, (uint16_t)cursorY_);
 }
 
+int64_t TouchMapper::HoldDurationNs(float& outX, float& outY) const
+{
+    if (!holding_ || holdDrift_ > kHoldSlopPx)
+        return -1;
+    outX = holdX_;
+    outY = holdY_;
+    return NowMonoNs() - holdStartNs_;
+}
+
+/** 单指按住状态，与两种模式各自的手势状态机并行维护 */
+void TouchMapper::UpdateHold(const OH_NativeXComponent_TouchEvent& event)
+{
+    const uint32_t pressed = CountPressed(event);
+    switch (event.type) {
+        case OH_NATIVEXCOMPONENT_DOWN:
+            if (pressed == 1) {
+                holding_ = true;
+                holdX_ = event.x;
+                holdY_ = event.y;
+                holdDrift_ = 0;
+                // 用自己取的单调时钟，不用 event.timeStamp：两者时基未必一致
+                holdStartNs_ = NowMonoNs();
+            } else {
+                holding_ = false; // 多指是缩放/滚动，不是长按
+            }
+            break;
+        case OH_NATIVEXCOMPONENT_MOVE:
+            if (holding_) {
+                if (pressed != 1) {
+                    holding_ = false;
+                    break;
+                }
+                const float dx = event.x - holdX_;
+                const float dy = event.y - holdY_;
+                const float d = std::sqrt(dx * dx + dy * dy);
+                if (d > holdDrift_)
+                    holdDrift_ = d;
+            }
+            break;
+        default:
+            holding_ = false; // UP / CANCEL
+            break;
+    }
+}
+
 void TouchMapper::OnTouch(const OH_NativeXComponent_TouchEvent& event, RdpSession* session)
 {
     if (!session)
         return;
+    UpdateHold(event);
     if (trackpad_)
         OnTouchTrackpad(event, session);
     else

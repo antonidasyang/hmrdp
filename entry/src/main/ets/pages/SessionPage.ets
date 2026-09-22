@@ -16,12 +16,17 @@ import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
 import { inputConsumer, KeyCode } from '@kit.InputKit';
 import { SessionAliveResponder } from '../model/SessionProbe';
 
+/** libhmrdp.so 的 TouchHold 本地镜像 */
+interface HmTouchHold {
+  ms: number;
+  x: number;
+  y: number;
+}
+
 /** 长按多久算右键（ms）。带进度圈反馈，所以可以给足时间不误触 */
 const LONG_PRESS_MS = 2000;
-/** 长按期间允许的手指抖动（vp）。按住整整 2 秒，手指自然漂移很容易超过十几个像素——
- *  容差给小了长按几乎必被中途取消。放宽到 18vp，代价是原生（14px 就判拖拽）可能已经
- *  落了左键或挪了指针，这一点由 LongPressRightClick 里的 Cancel 兜底 */
-const LONG_PRESS_SLOP = 18;
+/** 轮询按住状态的间隔（ms）。漂移判定在原生侧做，这里只负责画圈 */
+const HOLD_POLL_MS = 60;
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -217,12 +222,9 @@ export struct SessionPage {
   @State pressPct: number = 0;
   @State pressCx: number = 0;
   @State pressCy: number = 0;
-  private pressTimer: number = -1;
-  private pressOx: number = 0; // 按下点（surface 本地 vp），用来判抖动和传给原生
+  private holdTimer: number = -1;
+  private pressOx: number = 0; // 按下点（surface 像素），直接回传给原生
   private pressOy: number = 0;
-  private pressStartX: number = 0;
-  private pressStartY: number = 0;
-  private touchLogged: number = 0;
   /** 首次连接成功后的新手引导：先逐个讲工具条按钮，再引导点开键盘，最后讲手势。
    *  -1 = 不在引导中 */
   @State tourStep: number = -1;
@@ -854,80 +856,73 @@ export struct SessionPage {
 
   // ---- 长按 = 右键（两种触摸模式都适用；双指轻点那条路照旧保留）----
 
-  /** XComponent 的触摸监听。只做长按计时，不消费事件——真正的触摸->鼠标映射仍在原生侧，
-   *  这里若用手势识别器（PanGesture 之类）会打乱原生的事件投递 */
-  private onSurfaceTouch(event: TouchEvent): void {
+  /** 轮询原生的「单指按住」状态来画长按进度圈。
+   *  为什么不用 ArkUI 的 onTouch：XComponent 是 SURFACE 类型 + native 渲染，触摸事件
+   *  被直接交给原生回调，onTouch 一次都不会触发（实测日志里连 down 都收不到）。
+   *  也不用 LongPressGesture：手势识别器会改变事件分发，之前常驻 PanGesture 就把原生的
+   *  触摸投递打乱过（触控板指针发跳）。轮询完全不碰事件链路，最稳。 */
+  private startHoldPoll(): void {
+    this.stopHoldPoll();
     if (this.isPc) {
       return; // PC 有物理鼠标右键
     }
-    if (event.type === TouchType.Down) {
-      if (this.touchLogged < 6) {
-        this.touchLogged++;
-        console.info(`HMRDP touch down fingers=${event.touches.length}`);
+    this.holdTimer = setInterval(() => { this.pollHold(); }, HOLD_POLL_MS);
+  }
+
+  private stopHoldPoll(): void {
+    if (this.holdTimer >= 0) {
+      clearInterval(this.holdTimer);
+      this.holdTimer = -1;
+    }
+    this.cancelLongPress();
+  }
+
+  private pollHold(): void {
+    let hold: HmTouchHold;
+    try {
+      hold = hmrdp.getTouchHold() as HmTouchHold;
+    } catch (e) {
+      return;
+    }
+    if (hold.ms < 0) {
+      if (this.pressing) {
+        this.cancelLongPress(); // 松手了，或漂移超出原生的长按容差
       }
-      if (event.touches.length !== 1) {
-        this.cancelLongPress(); // 多指是缩放/滚动，不是长按
-        return;
-      }
-      const t = event.touches[0];
-      this.startLongPress(t.x, t.y, t.windowX, t.windowY);
-    } else if (event.type === TouchType.Move) {
-      if (!this.pressing) {
-        return;
-      }
-      if (event.touches.length !== 1) {
-        this.cancelLongPress();
-        return;
-      }
-      const t = event.touches[0];
-      if (Math.abs(t.x - this.pressStartX) > LONG_PRESS_SLOP ||
-        Math.abs(t.y - this.pressStartY) > LONG_PRESS_SLOP) {
-        this.cancelLongPress();
-      }
-    } else {
-      this.cancelLongPress(); // Up / Cancel
+      return;
+    }
+    if (!this.pressing) {
+      this.pressing = true;
+      this.pressOx = hold.x; // 原生要的是 surface 像素，原样留着
+      this.pressOy = hold.y;
+      console.info(`HMRDP longpress start at ${hold.x.toFixed(0)},${hold.y.toFixed(0)}px`);
+    }
+    // 圈要画在手指的实际屏幕位置：surface 本地坐标还要过一遍画面的缩放与平移
+    const lx = this.getUIContext().px2vp(hold.x);
+    const ly = this.getUIContext().px2vp(hold.y);
+    const cx = this.viewW / 2;
+    const cy = this.viewH / 2;
+    this.pressCx = cx + (lx - cx) * this.viewScale + this.offsetX;
+    this.pressCy = cy + (ly - cy) * this.viewScale + this.offsetY - this.kbShift;
+    this.pressPct = Math.min(100, (hold.ms * 100) / LONG_PRESS_MS);
+    if (hold.ms >= LONG_PRESS_MS) {
+      this.fireLongPress();
     }
   }
 
-  private startLongPress(x: number, y: number, wx: number, wy: number): void {
-    this.cancelLongPress();
-    this.pressStartX = x;
-    this.pressStartY = y;
-    this.pressOx = x;
-    this.pressOy = y;
-    this.pressCx = wx - this.viewGx;
-    this.pressCy = wy - this.viewGy;
-    this.pressPct = 0;
-    this.pressing = true;
-    console.info(`HMRDP longpress start at ${x.toFixed(0)},${y.toFixed(0)}vp`);
-    const stepMs = 40;
-    this.pressTimer = setInterval(() => {
-      this.pressPct = this.pressPct + (stepMs * 100) / LONG_PRESS_MS;
-      if (this.pressPct >= 100) {
-        this.fireLongPress();
-      }
-    }, stepMs);
-  }
-
   private fireLongPress(): void {
-    const px = this.getUIContext().vp2px(this.pressOx);
-    const py = this.getUIContext().vp2px(this.pressOy);
+    const px = this.pressOx;
+    const py = this.pressOy;
     this.cancelLongPress();
     try {
       hmrdp.sendLongPressRightClick(px, py);
       console.info(`HMRDP longpress fire ${px.toFixed(0)},${py.toFixed(0)}px`);
     } catch (e) {
-      // 别吞掉：.so 少了这个导出时，现象就是「圈转完了什么也没发生」
       const err = e as BusinessError;
       console.error(`HMRDP longpress 调用原生失败: code=${err.code} ${err.message}`);
     }
   }
 
   private cancelLongPress(): void {
-    if (this.pressTimer >= 0) {
-      clearInterval(this.pressTimer);
-      this.pressTimer = -1;
-    }
     if (this.pressing) {
       this.pressing = false;
     }
@@ -1481,6 +1476,7 @@ export struct SessionPage {
       this.setupClipboard();
       if (!this.isPc) {
         this.setupKeyboardWatch(); // 软键盘高度：上推画面的范围 + 工具条抬升
+        this.startHoldPoll();      // 长按出右键
       }
       // 首次连接：等画面先出来，再开始讲工具条
       setTimeout(() => {
@@ -1634,7 +1630,6 @@ export struct SessionPage {
           .defaultFocus(true)
           .scale({ x: this.viewScale, y: this.viewScale })
           .translate({ x: this.offsetX, y: this.offsetY - this.kbShift })
-          .onTouch((event: TouchEvent) => { this.onSurfaceTouch(event); })
           .onAreaChange((_o: Area, n: Area) => {
             this.viewW = n.width as number;
             this.viewH = n.height as number;
@@ -1879,7 +1874,7 @@ export struct SessionPage {
         }
       }
       this.softKb = false;
-      this.cancelLongPress();
+      this.stopHoldPoll();
       this.aliveResponder.stop();
       this.teardownClipboard();
       this.teardownKeyInterception();
