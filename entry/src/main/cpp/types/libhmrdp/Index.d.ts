@@ -60,7 +60,8 @@ export const setGestureActive: (active: boolean) => void;
 /** 触摸操作模式：false 直接触摸（点哪是哪），true 触控板（相对指针） */
 export const setTouchMode: (trackpad: boolean) => void;
 
-/** 当前单指按住状态，供 ArkTS 画长按进度圈 */
+/** 当前单指按住状态，供 ArkTS 画长按进度圈。
+ *  会话期间需持续轮询：它同时推进触控板模式「轻点暂扣」的计时，不调的话轻点要等下次按下才发出 */
 export interface TouchHold {
   /** 按住且未明显漂移的毫秒数；< 0 表示当前没有这样的按住 */
   ms: number;

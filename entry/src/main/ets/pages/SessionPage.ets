@@ -23,16 +23,19 @@ interface HmTouchHold {
   y: number;
 }
 
-/** 长按多久算右键（ms） */
-const LONG_PRESS_MS = 1000;
+/** 长按多久算右键（ms）= 静止门槛 HOLD_SHOW_MS + 圆环转一圈的 1s */
+const LONG_PRESS_MS = 2000;
 /** 轮询按住状态的间隔（ms）。漂移判定在原生侧做，这里只负责画圈。
  *  40ms ≈ 25fps，圆环转起来才顺；一次 napi 调用的开销可以忽略 */
 const HOLD_POLL_MS = 40;
-/** 按住超过这个时间才画圈：否则每次普通点击都会闪一下进度圈。
- *  总时长缩到 1s 后这个门槛也要跟着降，不然圈只剩很短一段可转 */
-const HOLD_SHOW_MS = 200;
+/** 按住不动超过这个时间才开始画圈转：门槛太短的话手指一停就转，
+ *  拖拽/选文字途中稍一停顿都会冒出圈来，太灵敏反而碍事 */
+const HOLD_SHOW_MS = 1000;
 /** 计时指示的直径（vp） */
 const RING_D = 28;
+
+/** 键盘弹出时上推画面用几指拖。双指留给远端滚轮 */
+const KB_PAN_FINGERS = 3;
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -221,7 +224,7 @@ export struct SessionPage {
   @State softKb: boolean = false;
   /** 打中文时的功能键横条是否折叠（折叠后只剩一个小把手，屏幕上只有系统键盘） */
   @State imeBarFolded: boolean = false;
-  /** 首次弹出键盘时的操作引导（双指拖动画面），看过一次就不再出现 */
+  /** 首次弹出键盘时的操作引导（三指拖动画面），看过一次就不再出现 */
   @State showPanTip: boolean = false;
   // 长按出右键：进度圈画在手指处（窗口坐标），计时满了由原生按当前模式决定右键落点
   @State pressing: boolean = false;
@@ -243,8 +246,10 @@ export struct SessionPage {
   private tourList: TourStep[] = [];
   private baseKbShift: number = 0;
   // 正在上推画面的手势用了几根手指（0 = 没有）。PanGesture 的 fingers 是「至少几指」，
-  // 双指拖动会把单指 Pan 一起触发，靠这个只认一个手势的回调，免得两边互相抢
+  // 三指拖动会把双指 Pan（缩放后平移画面）一起触发，靠这个只认一个手势的回调，免得两边互相抢
   private kbPanFingers: number = 0;
+  /** 双指平移（放大后挪画面）是否正在进行 */
+  private zoomPanning: boolean = false;
   private kbWin: window.Window | undefined = undefined;
   private kbHeightCb: (h: number) => void = (h: number) => {
     this.onKeyboardHeight(h);
@@ -1018,7 +1023,8 @@ export struct SessionPage {
       '调出内置的紧凑键盘，带 Esc、方向键、Home/End、PgUp/PgDn 这些手机键盘没有的键。'));
     steps.push(tstep('touch', $r('sys.symbol.hand_point_up_tap_fill'), '直接触摸 / 触控板',
       '直接触摸：点哪儿就点远端哪儿。\n'
-      + '触控板：屏幕当触控板用，滑动移指针、轻点左键、双指轻点右键，适合点小按钮。\n'
+      + '触控板：屏幕当触控板用，滑动移指针、轻点左键、轻点后再按住拖 = 拖拽、双指轻点右键，适合点小按钮。\n'
+      + '两种模式下按住不动 1 秒会出现圆环，转满即右键。\n'
       + '选哪种会按这台电脑记住。'));
     steps.push(tstep('reset', $r('sys.symbol.arrow_counterclockwise'), '复位',
       '画面被放大、拖动过，或者被键盘顶上去之后，一键回到 1:1 的原始位置。'));
@@ -1038,7 +1044,7 @@ export struct SessionPage {
     // 三、键盘出来了，讲手势和键盘本身
     steps.push(tstep('', $r('sys.symbol.hand_point_up_tap_fill'), '放大和移动画面',
       '双指张合 = 放大 / 缩小。\n'
-      + '双指上下拖 = 移动画面，看键盘挡住的部分（手指落在键盘上拖也行）。\n'
+      + '三指上下拖 = 移动画面，看键盘挡住的部分（手指落在键盘上拖也行）。\n'
       + '点工具条的「复位」还原。'));
     steps.push(tstep('', $r('sys.symbol.keyboard'), '键盘上有什么',
       '「?123」切数字符号层；右侧是 Esc、方向键、Home/End、PgUp/PgDn。\n'
@@ -1167,7 +1173,7 @@ export struct SessionPage {
     .position({ right: 12, top: 30 })
   }
 
-  /** 键盘第一次挡住画面时，告诉用户可以双指把画面推上来——这个手势没有任何视觉线索，
+  /** 键盘第一次挡住画面时，告诉用户可以三指把画面推上来——这个手势没有任何视觉线索，
    *  不说没人会去试。看过一次就记住，不再打扰 */
   private maybeShowPanTip(): void {
     if (this.showPanTip || this.isPc || this.tourStep >= 0) {
@@ -1201,7 +1207,7 @@ export struct SessionPage {
         .fontSize(16)
         .fontColor(Color.White)
         .fontWeight(FontWeight.Medium)
-      Text('用两根手指在屏幕上下拖动，把远端画面移上来看被挡住的部分。\n收起键盘后自动归位，也可以点工具条的「复位」。')
+      Text('用三根手指在屏幕上下拖动，把远端画面移上来看被挡住的部分。\n收起键盘后自动归位，也可以点工具条的「复位」。')
         .fontSize(13)
         .fontColor('#CCFFFFFF')
         .textAlign(TextAlign.Center)
@@ -1246,20 +1252,20 @@ export struct SessionPage {
     }
   }
 
-  /** 键盘/导航面板上的双指竖拖：它们盖着画面，手指落在上面也得能把画面推上去。
+  /** 键盘/导航面板上的三指竖拖：它们盖着画面，手指落在上面也得能把画面推上去。
    *  触摸本来就不会传给 XComponent，所以不必动 setGestureActive */
   private onPanelPan(phase: number, dy: number): void {
     if (phase === PAN_START) {
       if (this.panLimit() <= 0 || this.kbPanFingers !== 0) {
         return;
       }
-      this.kbPanFingers = 2;
+      this.kbPanFingers = KB_PAN_FINGERS;
       this.baseKbShift = this.kbShift;
     } else if (phase === PAN_UPDATE) {
-      if (this.kbPanFingers === 2) {
+      if (this.kbPanFingers === KB_PAN_FINGERS) {
         this.kbShift = Math.min(this.panLimit(), Math.max(0, this.baseKbShift - dy));
       }
-    } else if (this.kbPanFingers === 2) {
+    } else if (this.kbPanFingers === KB_PAN_FINGERS) {
       this.kbPanFingers = 0;
     }
   }
@@ -1345,14 +1351,15 @@ export struct SessionPage {
     }
   }
 
-  /** 键盘弹出期间是否由本手势上推画面：一律双指竖向拖。
+  /** 键盘弹出期间是否由本手势上推画面：一律三指竖向拖。
    *  不用单指——单指在触控板模式是移指针、在直接触摸模式是点击/拖拽，两种模式的核心操作都被占；
-   *  而且常驻一个单指竖向 PanGesture 会打乱原生 XComponent 的触摸投递（触控板指针上下走发跳）。 */
+   *  而且常驻一个单指竖向 PanGesture 会打乱原生 XComponent 的触摸投递（触控板指针上下走发跳）。
+   *  也不用双指——双指是远端滚轮，打字时要翻上下文正需要它，被上推画面占掉就没法滚了。 */
   private kbPanAllowed(fingers: number): boolean {
     if (this.panLimit() <= 0 || this.isPc) {
       return false;
     }
-    return fingers === 2;
+    return fingers === KB_PAN_FINGERS;
   }
 
   /** fingers = 该 PanGesture 声明的指数；event 用来核对实际落下的指数 */
@@ -1372,6 +1379,16 @@ export struct SessionPage {
     }
     // 手指上滑（dy<0）→ 画面上推；范围 [0, 键盘+功能键条高度]
     this.kbShift = Math.min(this.panLimit(), Math.max(0, this.baseKbShift - dy));
+  }
+
+  private endZoomPan(): void {
+    if (!this.zoomPanning) {
+      return;
+    }
+    this.zoomPanning = false;
+    if (this.kbPanFingers === 0) { // 三指上推还在进行的话，setGestureActive 由它收尾
+      hmrdp.setGestureActive(false);
+    }
   }
 
   private kbPanEnd(fingers: number): void {
@@ -1708,42 +1725,40 @@ export struct SessionPage {
                   }
                   hmrdp.setGestureActive(false);
                 }),
-              // 双指拖动：键盘弹出时上推画面，否则（缩放后）平移画面。
-              // 两者都不成立时不接管触摸，否则原生的双指滚轮会被这里吃掉
+              // 三指拖动：键盘弹出时上推画面
+              PanGesture({ fingers: KB_PAN_FINGERS })
+                .onActionStart((event: GestureEvent) => {
+                  this.kbPanStart(KB_PAN_FINGERS, event);
+                })
+                .onActionUpdate((event: GestureEvent) => {
+                  this.kbPanUpdate(KB_PAN_FINGERS, event.offsetY as number);
+                })
+                .onActionEnd(() => { this.kbPanEnd(KB_PAN_FINGERS); })
+                .onActionCancel(() => { this.kbPanEnd(KB_PAN_FINGERS); }),
+              // 双指拖动：缩放后平移画面。没放大时不接管触摸，否则原生的双指滚轮会被这里吃掉。
+              // fingers 是「至少几指」，三指上推画面时它也会触发，那时让给上面那个手势
               PanGesture({ fingers: 2 })
                 .onActionStart((event: GestureEvent) => {
-                  if (this.kbPanStart(2, event)) {
+                  this.zoomPanning = false;
+                  if (this.kbPanFingers !== 0 || event.fingerList.length !== 2) {
                     return;
                   }
                   if (this.viewScale > 1) {
+                    this.zoomPanning = true;
                     hmrdp.setGestureActive(true);
                     this.baseOffsetX = this.offsetX;
                     this.baseOffsetY = this.offsetY;
                   }
                 })
                 .onActionUpdate((event: GestureEvent) => {
-                  if (this.kbPanFingers === 2) {
-                    this.kbPanUpdate(2, event.offsetY as number);
-                  } else if (this.viewScale > 1) {
+                  if (this.zoomPanning && this.kbPanFingers === 0) {
                     this.offsetX = this.baseOffsetX + (event.offsetX as number);
                     this.offsetY = this.baseOffsetY + (event.offsetY as number);
                     this.clampOffsets();
                   }
                 })
-                .onActionEnd(() => {
-                  if (this.kbPanFingers === 2) {
-                    this.kbPanEnd(2);
-                  } else if (this.viewScale > 1) {
-                    hmrdp.setGestureActive(false);
-                  }
-                })
-                .onActionCancel(() => {
-                  if (this.kbPanFingers === 2) {
-                    this.kbPanEnd(2);
-                  } else if (this.viewScale > 1) {
-                    hmrdp.setGestureActive(false);
-                  }
-                })
+                .onActionEnd(() => { this.endZoomPan(); })
+                .onActionCancel(() => { this.endZoomPan(); })
             )
           )
           .onAxisEvent((event: AxisEvent) => {

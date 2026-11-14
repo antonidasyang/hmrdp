@@ -4,7 +4,8 @@ import { KeyCode } from '@kit.InputKit';
 
 const PREF_NAME = 'hmrdp_settings';
 const KEY_DESKTOP_HOTKEY = 'desktop_hotkey';
-const KEY_PAN_TIP_SEEN = 'pan_tip_seen';
+// 手势从双指改成三指后换了 key：看过旧提示（双指）的用户也得再看一次新手势
+const KEY_PAN_TIP_SEEN = 'pan_tip_seen_3f';
 const KEY_TOOLBAR_TOUR_SEEN = 'toolbar_tour_seen';
 
 /** 修饰键位掩码，与原生 setDesktopHotkey 的约定一致（不含 Win：鸿蒙优先抢占，且会话中要转发给远端） */
@@ -150,7 +151,7 @@ export class SettingsStore {
     p.flush();
   }
 
-  /** 「键盘挡住画面时可双指拖动」这条引导是否已经看过（只在首次弹键盘时提示一次） */
+  /** 「键盘挡住画面时可三指拖动」这条引导是否已经看过（只在首次弹键盘时提示一次） */
   static isPanTipSeen(context: common.Context): boolean {
     return SettingsStore.prefs(context).getSync(KEY_PAN_TIP_SEEN, false) as boolean;
   }

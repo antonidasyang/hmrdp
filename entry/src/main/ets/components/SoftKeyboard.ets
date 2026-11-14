@@ -35,7 +35,7 @@ export const ACT_IME = 2;  // 切到系统输入法（输中文）
 export const ACT_ABC = 3;  // 从系统输入法切回紧凑键盘
 export const ACT_FOLD = 4; // 折叠/展开功能键横条
 
-/** 双指拖动画面的阶段 */
+/** 三指拖动画面的阶段 */
 export const PAN_START = 0;
 export const PAN_UPDATE = 1;
 export const PAN_END = 2;
@@ -185,7 +185,7 @@ export struct NavPad {
   /** 面板高度；由紧凑键盘给出可用高度 */
   @Prop padHeight: number = NAV_PAD_H;
   onKey: (code: number, ext: boolean, needShift: boolean) => void = () => {};
-  /** 双指竖拖：面板压着画面，手指落在这上面也得能把画面推上去 */
+  /** 三指竖拖：面板压着画面，手指落在这上面也得能把画面推上去 */
   onPan: (phase: number, dy: number) => void = () => {};
 
   build() {
@@ -214,7 +214,7 @@ export struct NavPad {
     .width(NAV_PAD_W)
     .height(this.padHeight)
     .gesture(
-      PanGesture({ fingers: 2, direction: PanDirection.Vertical })
+      PanGesture({ fingers: 3, direction: PanDirection.Vertical })
         .onActionStart(() => { this.onPan(PAN_START, 0); })
         .onActionUpdate((e: GestureEvent) => { this.onPan(PAN_UPDATE, e.offsetY as number); })
         .onActionEnd(() => { this.onPan(PAN_END, 0); })
@@ -304,7 +304,7 @@ export struct ImeKeyBar {
     .width('100%')
     .alignItems(HorizontalAlign.End) // 折叠后的把手贴右边
     .gesture(
-      PanGesture({ fingers: 2, direction: PanDirection.Vertical })
+      PanGesture({ fingers: 3, direction: PanDirection.Vertical })
         .onActionStart(() => { this.onPan(PAN_START, 0); })
         .onActionUpdate((e: GestureEvent) => { this.onPan(PAN_UPDATE, e.offsetY as number); })
         .onActionEnd(() => { this.onPan(PAN_END, 0); })
@@ -322,7 +322,7 @@ export struct SoftKeyboard {
   onKey: (code: number, ext: boolean, needShift: boolean) => void = () => {};
   /** 键盘自身动作（切系统输入法） */
   onAction: (act: number) => void = () => {};
-  /** 双指竖拖：键盘压着画面，手指落在键盘上也得能把画面推上去 */
+  /** 三指竖拖：键盘压着画面，手指落在键盘上也得能把画面推上去 */
   onPan: (phase: number, dy: number) => void = () => {};
 
   private shiftOn(): boolean {
@@ -403,7 +403,7 @@ export struct SoftKeyboard {
     .padding({ left: 6, right: 6, top: 5, bottom: 5 })
     .backgroundColor('#F0181818')
     .gesture(
-      PanGesture({ fingers: 2, direction: PanDirection.Vertical })
+      PanGesture({ fingers: 3, direction: PanDirection.Vertical })
         .onActionStart(() => { this.onPan(PAN_START, 0); })
         .onActionUpdate((e: GestureEvent) => { this.onPan(PAN_UPDATE, e.offsetY as number); })
         .onActionEnd(() => { this.onPan(PAN_END, 0); })

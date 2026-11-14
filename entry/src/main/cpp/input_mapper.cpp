@@ -19,6 +19,9 @@ constexpr float kWheelStepPx = 32.0f;        // 每滑动 32px 发一档滚轮
 // 长按允许的手指漂移。实测按住两秒时手指无意识位移常到 80px 上下，给到 120px
 // （约 1cm）才不会动不动就被掐断；真要拖动的话位移远不止这个数，不会误判
 constexpr float kHoldSlopPx = 120.0f;
+// 触控板「轻点 + 再按住拖」的双击窗口：轻点抬起后这么久内再按下，就算第二下。
+// 代价是触控板模式下单次轻点的左键会晚这么久才发出
+constexpr int64_t kDoubleTapNs = 280000000;
 
 int64_t NowMonoNs()
 {
@@ -44,6 +47,7 @@ void TouchMapper::Reset()
     if (holding_)
         HMLOGI("longpress: Reset() 清掉了按住状态");
     holding_ = false; // 触发过长按/被接管后别再让轮询读到同一次按住
+    tapPending_ = false;
     mode_ = Mode::Idle;
     scrollResidual_ = 0;
     scrolled_ = false;
@@ -58,6 +62,8 @@ void TouchMapper::SetTrackpadMode(bool trackpad)
 
 void TouchMapper::Cancel(RdpSession* session)
 {
+    // 轻点完马上开始双指缩放之类：暂扣的那一下照发，跟以前轻点即发的行为一致
+    FlushPendingTap(session);
     if (mode_ == Mode::LeftDrag && session) {
         if (trackpad_)
             session->SendPointerDesktop(PTR_FLAGS_BUTTON1, (uint16_t)cursorX_, (uint16_t)cursorY_);
@@ -121,6 +127,27 @@ void TouchMapper::SendCursorMove(RdpSession* session)
     session->SendPointerDesktop(PTR_FLAGS_MOVE, (uint16_t)cursorX_, (uint16_t)cursorY_);
 }
 
+void TouchMapper::SendTrackpadClick(RdpSession* session)
+{
+    session->SendPointerDesktop(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1, (uint16_t)cursorX_, (uint16_t)cursorY_);
+    session->SendPointerDesktop(PTR_FLAGS_BUTTON1, (uint16_t)cursorX_, (uint16_t)cursorY_);
+}
+
+void TouchMapper::FlushPendingTap(RdpSession* session)
+{
+    if (!tapPending_)
+        return;
+    tapPending_ = false;
+    if (session)
+        SendTrackpadClick(session); // 轻点之后没再碰屏幕，cursorX_/Y_ 仍是轻点时的指针位置
+}
+
+void TouchMapper::Tick(RdpSession* session)
+{
+    if (tapPending_ && mode_ == Mode::Idle && NowMonoNs() - tapUpNs_ >= kDoubleTapNs)
+        FlushPendingTap(session);
+}
+
 int64_t TouchMapper::HoldDurationNs(float& outX, float& outY) const
 {
     if (!holding_ || holdDrift_ > kHoldSlopPx)
@@ -182,7 +209,8 @@ void TouchMapper::OnTouch(const OH_NativeXComponent_TouchEvent& event, RdpSessio
         OnTouchDirect(event, session);
 }
 
-// 触控板模式：单指相对移动虚拟指针，轻点=左键，双指滑动=滚轮，双指轻点=右键
+// 触控板模式：单指相对移动虚拟指针，轻点=左键，轻点后再按住拖=左键拖拽，
+// 双指滑动=滚轮，双指轻点=右键
 void TouchMapper::OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, RdpSession* session)
 {
     const float x = event.x;
@@ -192,14 +220,28 @@ void TouchMapper::OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, R
     switch (event.type) {
         case OH_NATIVEXCOMPONENT_DOWN:
             if (mode_ == Mode::Idle) {
-                SyncCursor(session); // 远端可能已把指针挪走（如 Win+D），从会话取权威位置
-                mode_ = Mode::Pending;
+                if (tapPending_ && NowMonoNs() - tapUpNs_ < kDoubleTapNs) {
+                    // 轻点后紧接着又按下：先不发任何键，看接下来是拖动（拖拽）还是抬起（双击）。
+                    // 指针没动过，不必 SyncCursor
+                    tapPending_ = false;
+                    mode_ = Mode::TapHold;
+                    holding_ = false; // 这一下是要拖的，按住不动也别转圈出右键
+                } else {
+                    FlushPendingTap(session); // 轮询没赶上的话，过期的那一下在这里补发
+                    SyncCursor(session); // 远端可能已把指针挪走（如 Win+D），从会话取权威位置
+                    mode_ = Mode::Pending;
+                }
                 downX_ = lastX_ = x;
                 downY_ = lastY_ = y;
                 downTimeNs_ = event.timeStamp;
                 moved_ = false;
                 scrolled_ = false;
             } else if (pressed >= 2) {
+                if (mode_ == Mode::TapHold) {
+                    SendTrackpadClick(session); // 轻点后又落了双指：前一下轻点照常算一次单击
+                } else if (mode_ == Mode::LeftDrag) {
+                    session->SendPointerDesktop(PTR_FLAGS_BUTTON1, (uint16_t)cursorX_, (uint16_t)cursorY_);
+                }
                 mode_ = Mode::TwoFinger;
                 scrollResidual_ = 0;
                 scrolled_ = false;
@@ -207,7 +249,19 @@ void TouchMapper::OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, R
             break;
 
         case OH_NATIVEXCOMPONENT_MOVE:
-            if (mode_ == Mode::Pending || mode_ == Mode::LeftDrag) {
+            if (mode_ == Mode::TapHold) {
+                // 第二下按住后移出轻点范围 = 拖拽：在指针原处落左键再开始带着走。
+                // 没移出之前指针不动，保证抓的正是轻点时指着的东西
+                if (fabsf(x - downX_) > kTapSlopPx || fabsf(y - downY_) > kTapSlopPx) {
+                    session->SendPointerDesktop(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1, (uint16_t)cursorX_,
+                                                (uint16_t)cursorY_);
+                    mode_ = Mode::LeftDrag;
+                    moved_ = true;
+                    cursorX_ += (x - downX_) * trackpadSensitivity_;
+                    cursorY_ += (y - downY_) * trackpadSensitivity_;
+                    SendCursorMove(session);
+                }
+            } else if (mode_ == Mode::Pending || mode_ == Mode::LeftDrag) {
                 const float dx = x - lastX_;
                 const float dy = y - lastY_;
                 if (fabsf(x - downX_) > kTapSlopPx || fabsf(y - downY_) > kTapSlopPx)
@@ -233,12 +287,21 @@ void TouchMapper::OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, R
             if (mode_ == Mode::Pending && pressed == 0) {
                 const int64_t elapsed = event.timeStamp - downTimeNs_;
                 if (!moved_ && elapsed < kTapTimeoutNs) {
-                    // 轻点 = 左键单击（在当前虚拟指针位置）
-                    session->SendPointerDesktop(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1,
-                                                (uint16_t)cursorX_, (uint16_t)cursorY_);
-                    session->SendPointerDesktop(PTR_FLAGS_BUTTON1, (uint16_t)cursorX_,
-                                                (uint16_t)cursorY_);
+                    // 轻点 = 左键单击（在当前虚拟指针位置）。先扣着不发：双击窗口内再按下
+                    // 就是「双击按住拖」，那时远端只该收到一次按下，不能先收到这一下单击——
+                    // 单击+紧跟的按下会被 Windows 当成双击（标题栏最大化、文件被打开）
+                    tapPending_ = true;
+                    tapUpNs_ = NowMonoNs();
                 }
+                mode_ = Mode::Idle;
+            } else if (mode_ == Mode::TapHold && pressed == 0) {
+                const int64_t elapsed = event.timeStamp - downTimeNs_;
+                SendTrackpadClick(session); // 暂扣的第一下
+                if (elapsed < kTapTimeoutNs)
+                    SendTrackpadClick(session); // 第二下也是轻点 = 双击；按久了没拖就只算前一下
+                mode_ = Mode::Idle;
+            } else if (mode_ == Mode::LeftDrag && pressed == 0) {
+                session->SendPointerDesktop(PTR_FLAGS_BUTTON1, (uint16_t)cursorX_, (uint16_t)cursorY_);
                 mode_ = Mode::Idle;
             } else if (mode_ == Mode::TwoFinger && pressed == 0) {
                 const int64_t elapsed = event.timeStamp - downTimeNs_;

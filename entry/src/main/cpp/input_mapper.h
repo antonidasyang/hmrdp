@@ -31,18 +31,24 @@ public:
     // ArkTS 侧靠轮询它画长按进度圈——XComponent 挂了 native 渲染后，ArkUI 的 onTouch
     // 收不到触摸事件，只有原生这条回调是通的
     int64_t HoldDurationNs(float& outX, float& outY) const;
+    // 触控板模式的轻点不立即发左键：要等一小段「双击窗口」看会不会接着按下拖拽。
+    // 原生侧没有定时器，由 ArkTS 那个本来就在跑的长按轮询顺手调用，窗口过了就把这一下补发出去
+    void Tick(RdpSession* session);
     bool IsTrackpad() const { return trackpad_; }
     // false = 直接触摸模式，true = 触控板（相对指针）模式
     void SetTrackpadMode(bool trackpad);
 
 private:
-    enum class Mode : uint8_t { Idle, Pending, LeftDrag, TwoFinger };
+    // TapHold：触控板模式下「轻点后很快又按下」的第二下，还没决定是双击还是拖拽
+    enum class Mode : uint8_t { Idle, Pending, LeftDrag, TwoFinger, TapHold };
 
     void UpdateHold(const OH_NativeXComponent_TouchEvent& event);
     void OnTouchDirect(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
     void OnTouchTrackpad(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
     void SyncCursor(RdpSession* session);
     void SendCursorMove(RdpSession* session);
+    void SendTrackpadClick(RdpSession* session);
+    void FlushPendingTap(RdpSession* session);
 
     bool trackpad_ = false;
     Mode mode_ = Mode::Idle;
@@ -60,6 +66,9 @@ private:
     float cursorX_ = 0;
     float cursorY_ = 0;
     float trackpadSensitivity_ = 1.6f;
+    // 触控板轻点后暂扣的那一下左键（见 Tick）
+    bool tapPending_ = false;
+    int64_t tapUpNs_ = 0;
 
     // 长按判定。与拖拽阈值分开：拖拽 14px 就触发，而按住整整 2 秒手指漂移远不止 14px，
     // 用同一个阈值的话长按几乎必然失败。这里单独给一个宽松的漂移上限

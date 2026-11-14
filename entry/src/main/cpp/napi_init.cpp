@@ -775,6 +775,9 @@ napi_value GetTouchHold(napi_env env, napi_callback_info info)
     double hy = 0;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
+        // 顺带推进触控板的「轻点暂扣」计时：原生没有定时器，这条轮询就是现成的节拍
+        if (g_touchEnabled.load())
+            g_touchMapper.Tick(CurrentSession());
         float x = 0;
         float y = 0;
         const int64_t ns = g_touchEnabled.load() ? g_touchMapper.HoldDurationNs(x, y) : -1;
