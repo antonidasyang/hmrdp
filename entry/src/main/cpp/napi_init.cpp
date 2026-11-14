@@ -52,6 +52,9 @@ constexpr uint32_t kHeldShiftL = 1u << 4;
 constexpr uint32_t kHeldShiftR = 1u << 5;
 
 napi_threadsafe_function g_desktopTsfn = nullptr;
+// 单指上推画面的回调（键盘弹出时直接触摸模式的单指拖动）。触摸回调本就在 UI 线程，
+// 走 TSFN 只是为了拿到 env；每个触摸事件至多一次，比轮询跟手
+napi_threadsafe_function g_viewPanTsfn = nullptr;
 std::atomic<uint32_t> g_desktopMods{ 0 };      // 需要的修饰键位掩码；0 = 未配置
 std::atomic<int32_t> g_desktopKey{ 0 };        // 触发键的 OHOS 键码；0 = 未配置
 std::atomic<uint32_t> g_heldMods{ 0 };         // 自行跟踪的修饰键按下态（物理键位）
@@ -90,6 +93,24 @@ void CallJsStateCallback(napi_env env, napi_value jsCallback, void* /*context*/,
     napi_call_function(env, undefined, jsCallback, 2, args, nullptr);
 }
 
+struct ViewPanEvent {
+    int32_t phase;
+    float dy;
+};
+
+void CallJsViewPanCallback(napi_env env, napi_value jsCallback, void* /*context*/, void* data)
+{
+    std::unique_ptr<ViewPanEvent> event(static_cast<ViewPanEvent*>(data));
+    if (!env || !jsCallback || !event)
+        return;
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    napi_value args[2] = {};
+    napi_create_int32(env, event->phase, &args[0]);
+    napi_create_double(env, event->dy, &args[1]);
+    napi_call_function(env, undefined, jsCallback, 2, args, nullptr);
+}
+
 void CallJsDesktopHotkeyCallback(napi_env env, napi_value jsCallback, void* /*context*/, void* /*data*/)
 {
     if (!env || !jsCallback)
@@ -106,6 +127,7 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
     napi_threadsafe_function clipTsfn = nullptr;
     napi_threadsafe_function clipImageTsfn = nullptr;
     napi_threadsafe_function desktopTsfn = nullptr;
+    napi_threadsafe_function viewPanTsfn = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         tsfn = g_stateTsfn;
@@ -119,8 +141,12 @@ void OnSessionState(SessionState state, const char* message, void* /*userData*/)
             g_clipImageTsfn = nullptr;
             desktopTsfn = g_desktopTsfn; // 会话结束即摘热键回调；重连时 ArkTS 会重新下发
             g_desktopTsfn = nullptr;
+            viewPanTsfn = g_viewPanTsfn; // 同上，连上后 ArkTS 重新挂
+            g_viewPanTsfn = nullptr;
         }
     }
+    if (viewPanTsfn)
+        napi_release_threadsafe_function(viewPanTsfn, napi_tsfn_release);
     if (desktopTsfn)
         napi_release_threadsafe_function(desktopTsfn, napi_tsfn_release);
     if (certTsfn)
@@ -471,11 +497,17 @@ void DispatchTouchEvent(OH_NativeXComponent* component, void* window)
     if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0)
         return;
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_gestureActive.load()) {
+    if (g_gestureActive.load())
         g_touchMapper.Cancel(CurrentSession()); // 手势接管：拖拽中的左键要补抬起
-        return;
+    else
+        g_touchMapper.OnTouch(event, CurrentSession());
+    int32_t phase = 0;
+    float dy = 0;
+    if (g_touchMapper.TakeViewPan(phase, dy) && g_viewPanTsfn) {
+        auto* pan = new ViewPanEvent{ phase, dy };
+        if (napi_call_threadsafe_function(g_viewPanTsfn, pan, napi_tsfn_nonblocking) != napi_ok)
+            delete pan;
     }
-    g_touchMapper.OnTouch(event, CurrentSession());
 }
 
 void DispatchMouseEvent(OH_NativeXComponent* component, void* window)
@@ -773,6 +805,7 @@ napi_value GetTouchHold(napi_env env, napi_callback_info info)
     double ms = -1;
     double hx = 0;
     double hy = 0;
+    double cursorFy = -1;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         // 顺带推进触控板的「轻点暂扣」计时：原生没有定时器，这条轮询就是现成的节拍
@@ -781,6 +814,19 @@ napi_value GetTouchHold(napi_env env, napi_callback_info info)
         float x = 0;
         float y = 0;
         const int64_t ns = g_touchEnabled.load() ? g_touchMapper.HoldDurationNs(x, y) : -1;
+        // 触控板模式下画面要跟着指针上推，ArkTS 需要知道指针在哪（按桌面高度的比例给，
+        // 画面是整幅拉伸到 XComponent 上的，乘上组件高度就是组件内纵坐标）
+        RdpSession* session = CurrentSession();
+        if (session && g_touchMapper.IsTrackpad()) {
+            uint32_t dw = 0;
+            uint32_t dh = 0;
+            uint32_t cx = 0;
+            uint32_t cy = 0;
+            session->GetDesktopSize(dw, dh);
+            session->GetCursorPos(cx, cy);
+            if (dh > 0)
+                cursorFy = static_cast<double>(cy) / static_cast<double>(dh);
+        }
         if (ns >= 0) {
             ms = static_cast<double>(ns) / 1000000.0;
             hx = x;
@@ -796,6 +842,8 @@ napi_value GetTouchHold(napi_env env, napi_callback_info info)
     napi_set_named_property(env, obj, "x", v);
     napi_create_double(env, hy, &v);
     napi_set_named_property(env, obj, "y", v);
+    napi_create_double(env, cursorFy, &v);
+    napi_set_named_property(env, obj, "cursorFy", v);
     return obj;
 }
 
@@ -816,6 +864,56 @@ napi_value SendLongPressRightClick(napi_env env, napi_callback_info info)
         std::lock_guard<std::mutex> lock(g_mutex);
         g_touchMapper.LongPressRightClick(static_cast<float>(x), static_cast<float>(y),
                                           CurrentSession());
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// setViewPan(on: boolean) — 键盘弹出时（直接触摸模式）单指拖动改为上推画面
+napi_value SetViewPan(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool on = false;
+    if (argc >= 1)
+        napi_get_value_bool(env, args[0], &on);
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_touchMapper.SetViewPan(on);
+    }
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// setViewPanCallback(cb?: (phase, dyPx) => void) — 单指上推画面的进度回调；不传 = 摘掉
+napi_value SetViewPanCallback(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    napi_threadsafe_function old = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        old = g_viewPanTsfn;
+        g_viewPanTsfn = nullptr;
+    }
+    if (old)
+        napi_release_threadsafe_function(old, napi_tsfn_release);
+    if (argc >= 1) {
+        napi_valuetype vt = napi_undefined;
+        napi_typeof(env, args[0], &vt);
+        if (vt == napi_function) {
+            napi_value resourceName = nullptr;
+            napi_create_string_utf8(env, "hmrdpViewPan", NAPI_AUTO_LENGTH, &resourceName);
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 0, 1, nullptr,
+                                                nullptr, nullptr, CallJsViewPanCallback,
+                                                &g_viewPanTsfn) != napi_ok)
+                g_viewPanTsfn = nullptr;
+        }
     }
     napi_value undefined = nullptr;
     napi_get_undefined(env, &undefined);
@@ -1165,6 +1263,8 @@ napi_value Init(napi_env env, napi_value exports)
         { "sendScancode", nullptr, SendScancode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "respondCert", nullptr, RespondCert, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setGestureActive", nullptr, SetGestureActive, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setViewPan", nullptr, SetViewPan, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setViewPanCallback", nullptr, SetViewPanCallback, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setTouchMode", nullptr, SetTouchMode, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sendLongPressRightClick", nullptr, SendLongPressRightClick, nullptr, nullptr, nullptr,
           napi_default, nullptr },

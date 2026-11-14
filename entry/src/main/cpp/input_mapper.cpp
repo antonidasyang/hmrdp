@@ -42,8 +42,33 @@ uint32_t CountPressed(const OH_NativeXComponent_TouchEvent& event)
 
 } // namespace
 
+void TouchMapper::SetViewPan(bool on)
+{
+    viewPan_ = on;
+}
+
+void TouchMapper::EmitViewPan(int32_t phase, float dy)
+{
+    // 一次触摸事件至多产生一个上推事件；没被取走就被覆盖的只会是 UPDATE，丢了无妨
+    panEventPending_ = true;
+    panPhase_ = phase;
+    panDy_ = dy;
+}
+
+bool TouchMapper::TakeViewPan(int32_t& phase, float& dy)
+{
+    if (!panEventPending_)
+        return false;
+    panEventPending_ = false;
+    phase = panPhase_;
+    dy = panDy_;
+    return true;
+}
+
 void TouchMapper::Reset()
 {
+    if (mode_ == Mode::ViewPan)
+        EmitViewPan(kViewPanEnd, 0); // 被接管/取消也要让 ArkTS 收尾
     if (holding_)
         HMLOGI("longpress: Reset() 清掉了按住状态");
     holding_ = false; // 触发过长按/被接管后别再让轮询读到同一次按住
@@ -336,7 +361,14 @@ void TouchMapper::OnTouchDirect(const OH_NativeXComponent_TouchEvent& event, Rdp
                 mode_ = Mode::Pending;
                 downX_ = lastX_ = x;
                 downY_ = lastY_ = y;
+                downScreenY_ = event.screenY;
                 downTimeNs_ = event.timeStamp;
+                scrolled_ = false;
+            } else if (mode_ == Mode::ViewPan && pressed >= 2) {
+                // 上推画面途中落第二指：收尾，转双指滚轮
+                EmitViewPan(kViewPanEnd, 0);
+                mode_ = Mode::TwoFinger;
+                scrollResidual_ = 0;
                 scrolled_ = false;
             } else if (mode_ == Mode::Pending && pressed >= 2) {
                 // 第二根手指：进入双指模式（滚轮/右键）
@@ -356,7 +388,12 @@ void TouchMapper::OnTouchDirect(const OH_NativeXComponent_TouchEvent& event, Rdp
             if (mode_ == Mode::Pending) {
                 const float dx = x - downX_;
                 const float dy = y - downY_;
-                if (std::sqrt(dx * dx + dy * dy) > kTapSlopPx) {
+                if (std::sqrt(dx * dx + dy * dy) > kTapSlopPx && viewPan_) {
+                    // 键盘弹出中：单指拖动 = 上推画面，远端什么都不发
+                    mode_ = Mode::ViewPan;
+                    holding_ = false; // 拖着画面走，不是长按
+                    EmitViewPan(kViewPanStart, event.screenY - downScreenY_);
+                } else if (std::sqrt(dx * dx + dy * dy) > kTapSlopPx) {
                     // 转为拖拽：按下点先落左键
                     session->SendPointer(PTR_FLAGS_MOVE, downX_, downY_);
                     session->SendPointer(PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1, downX_, downY_);
@@ -365,6 +402,8 @@ void TouchMapper::OnTouchDirect(const OH_NativeXComponent_TouchEvent& event, Rdp
                 }
             } else if (mode_ == Mode::LeftDrag) {
                 session->SendPointer(PTR_FLAGS_MOVE, x, y);
+            } else if (mode_ == Mode::ViewPan) {
+                EmitViewPan(kViewPanUpdate, event.screenY - downScreenY_);
             } else if (mode_ == Mode::TwoFinger) {
                 const float dy = y - lastY_;
                 scrollResidual_ += dy;
@@ -390,6 +429,9 @@ void TouchMapper::OnTouchDirect(const OH_NativeXComponent_TouchEvent& event, Rdp
             } else if (mode_ == Mode::LeftDrag && pressed == 0) {
                 session->SendPointer(PTR_FLAGS_MOVE, x, y);
                 session->SendPointer(PTR_FLAGS_BUTTON1, x, y);
+                mode_ = Mode::Idle;
+            } else if (mode_ == Mode::ViewPan && pressed == 0) {
+                EmitViewPan(kViewPanEnd, 0);
                 mode_ = Mode::Idle;
             } else if (mode_ == Mode::TwoFinger && pressed == 0) {
                 const int64_t elapsed = event.timeStamp - downTimeNs_;

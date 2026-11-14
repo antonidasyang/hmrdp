@@ -18,6 +18,11 @@ bool OhosKeyToRdpScancode(uint32_t ohosKeyCode, uint16_t& scancode, bool& extend
 // - 单指按住拖动 = 左键拖拽
 // - 双指纵向滑动 = 滚轮
 // - 双指轻点 = 右键单击
+// TakeViewPan 的阶段
+constexpr int32_t kViewPanStart = 0;
+constexpr int32_t kViewPanUpdate = 1;
+constexpr int32_t kViewPanEnd = 2;
+
 class TouchMapper {
 public:
     void OnTouch(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
@@ -34,13 +39,20 @@ public:
     // 触控板模式的轻点不立即发左键：要等一小段「双击窗口」看会不会接着按下拖拽。
     // 原生侧没有定时器，由 ArkTS 那个本来就在跑的长按轮询顺手调用，窗口过了就把这一下补发出去
     void Tick(RdpSession* session);
+    // 键盘弹出时（直接触摸模式）单指拖动改为上推画面，像 Windows App 那样：
+    // 不再落左键拖拽，而是把手指的竖向位移交给 ArkTS 去挪画面。轻点、长按照旧
+    void SetViewPan(bool on);
+    // 取出本次触摸事件产生的画面上推事件（phase 见 kViewPan*，dy = 手指相对按下点的
+    // 屏幕纵向位移，px）。没有返回 false
+    bool TakeViewPan(int32_t& phase, float& dy);
     bool IsTrackpad() const { return trackpad_; }
     // false = 直接触摸模式，true = 触控板（相对指针）模式
     void SetTrackpadMode(bool trackpad);
 
 private:
     // TapHold：触控板模式下「轻点后很快又按下」的第二下，还没决定是双击还是拖拽
-    enum class Mode : uint8_t { Idle, Pending, LeftDrag, TwoFinger, TapHold };
+    // ViewPan：键盘弹出时单指拖动，正在上推画面
+    enum class Mode : uint8_t { Idle, Pending, LeftDrag, TwoFinger, TapHold, ViewPan };
 
     void UpdateHold(const OH_NativeXComponent_TouchEvent& event);
     void OnTouchDirect(const OH_NativeXComponent_TouchEvent& event, RdpSession* session);
@@ -49,6 +61,7 @@ private:
     void SendCursorMove(RdpSession* session);
     void SendTrackpadClick(RdpSession* session);
     void FlushPendingTap(RdpSession* session);
+    void EmitViewPan(int32_t phase, float dy);
 
     bool trackpad_ = false;
     Mode mode_ = Mode::Idle;
@@ -69,6 +82,14 @@ private:
     // 触控板轻点后暂扣的那一下左键（见 Tick）
     bool tapPending_ = false;
     int64_t tapUpNs_ = 0;
+
+    // 单指上推画面。用屏幕坐标而不是 XComponent 内坐标：画面一挪，组件跟着平移，
+    // 组件内坐标就跟手指不同步了，会和上推量互相抵消
+    bool viewPan_ = false;
+    float downScreenY_ = 0;
+    bool panEventPending_ = false;
+    int32_t panPhase_ = 0;
+    float panDy_ = 0;
 
     // 长按判定。与拖拽阈值分开：拖拽 14px 就触发，而按住整整 2 秒手指漂移远不止 14px，
     // 用同一个阈值的话长按几乎必然失败。这里单独给一个宽松的漂移上限

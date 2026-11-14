@@ -9,7 +9,7 @@ import { SessionParams } from '../model/SessionParams';
 import { CertStore } from '../model/CertStore';
 import { PCStore } from '../model/PCStore';
 import { SoftKeyboard, ImeKeyBar, SOFT_KB_H, IME_BAR_H, IME_HANDLE_H, ACT_IME, ACT_ABC,
-  ACT_FOLD, PAN_START, PAN_UPDATE } from '../components/SoftKeyboard';
+  ACT_FOLD, PAN_START, PAN_UPDATE, PAN_END } from '../components/SoftKeyboard';
 import { isPcDevice, isLargeScreen, defaultScalePercent } from '../model/DeviceKit';
 import { DesktopHotkey, SettingsStore, defaultDesktopHotkey, hotkeyLabel,
   MOD_CTRL, MOD_ALT, MOD_SHIFT } from '../model/SettingsStore';
@@ -21,6 +21,8 @@ interface HmTouchHold {
   ms: number;
   x: number;
   y: number;
+  /** 触控板虚拟指针纵向位置（远端桌面高度的比例）；-1 = 不可用 */
+  cursorFy: number;
 }
 
 /** 长按多久算右键（ms）= 静止门槛 HOLD_SHOW_MS + 圆环转一圈的 1s */
@@ -34,8 +36,11 @@ const HOLD_SHOW_MS = 1000;
 /** 计时指示的直径（vp） */
 const RING_D = 28;
 
-/** 键盘弹出时上推画面用几指拖。双指留给远端滚轮 */
-const KB_PAN_FINGERS = 3;
+/** 触控板模式画面跟随指针时，指针离可见区上下边缘至少留这么多（vp） */
+const FOLLOW_MARGIN = 48;
+/** 原生单指上推画面回调的阶段（与 input_mapper.h 的 kViewPan* 对应） */
+const VIEW_PAN_START = 0;
+const VIEW_PAN_UPDATE = 1;
 
 const SC_BACKSPACE = 0x0E;
 const SC_ENTER = 0x1C;
@@ -224,7 +229,7 @@ export struct SessionPage {
   @State softKb: boolean = false;
   /** 打中文时的功能键横条是否折叠（折叠后只剩一个小把手，屏幕上只有系统键盘） */
   @State imeBarFolded: boolean = false;
-  /** 首次弹出键盘时的操作引导（三指拖动画面），看过一次就不再出现 */
+  /** 首次弹出键盘时的操作引导（单指拖动画面），看过一次就不再出现 */
   @State showPanTip: boolean = false;
   // 长按出右键：进度圈画在手指处（窗口坐标），计时满了由原生按当前模式决定右键落点
   @State pressing: boolean = false;
@@ -245,9 +250,12 @@ export struct SessionPage {
   @State tourStep: number = -1;
   private tourList: TourStep[] = [];
   private baseKbShift: number = 0;
-  // 正在上推画面的手势用了几根手指（0 = 没有）。PanGesture 的 fingers 是「至少几指」，
-  // 三指拖动会把双指 Pan（缩放后平移画面）一起触发，靠这个只认一个手势的回调，免得两边互相抢
-  private kbPanFingers: number = 0;
+  /** 正在用单指上推画面（画面上或键盘面板上），期间双指平移和指针跟随都让开 */
+  private kbPanning: boolean = false;
+  /** 上次下发给原生的「单指拖动 = 上推画面」开关；-1 = 还没下发过 */
+  private viewPanSent: number = -1;
+  /** 上次轮询看到的触控板指针位置，只在指针真的动了才跟随，不跟用户手动推的画面打架 */
+  private lastCursorFy: number = -1;
   /** 双指平移（放大后挪画面）是否正在进行 */
   private zoomPanning: boolean = false;
   private kbWin: window.Window | undefined = undefined;
@@ -890,6 +898,14 @@ export struct SessionPage {
     if (this.isPc) {
       return; // PC 有物理鼠标右键
     }
+    this.viewPanSent = -1; // 断线重连后原生侧已复位，重新下发
+    this.lastCursorFy = -1;
+    try {
+      hmrdp.setViewPanCallback((phase: number, dyPx: number) => { this.onScreenPan(phase, dyPx); });
+    } catch (e) {
+      const err = e as BusinessError;
+      console.error(`HMRDP setViewPanCallback 失败: code=${err.code} ${err.message}`);
+    }
     this.holdTimer = setInterval(() => { this.pollHold(); }, HOLD_POLL_MS);
     console.info(`HMRDP longpress 轮询已启动 interval=${HOLD_POLL_MS}ms`);
   }
@@ -898,6 +914,13 @@ export struct SessionPage {
     if (this.holdTimer >= 0) {
       clearInterval(this.holdTimer);
       this.holdTimer = -1;
+      try {
+        hmrdp.setViewPan(false); // 轮询停了就没人维护这个开关，别让单指拖动一直被当成推画面
+        hmrdp.setViewPanCallback();
+      } catch (e) {
+      }
+      this.viewPanSent = -1;
+      this.kbPanning = false;
     }
     this.cancelLongPress();
   }
@@ -915,6 +938,8 @@ export struct SessionPage {
       }
       return;
     }
+    this.syncViewPan();
+    this.followCursor(hold.cursorFy);
     if (hold.ms < 0) {
       if (this.pressing) {
         console.info(`HMRDP longpress 中断于 ${this.holdLastMs.toFixed(0)}ms（松手或漂移超限）`);
@@ -1044,7 +1069,7 @@ export struct SessionPage {
     // 三、键盘出来了，讲手势和键盘本身
     steps.push(tstep('', $r('sys.symbol.hand_point_up_tap_fill'), '放大和移动画面',
       '双指张合 = 放大 / 缩小。\n'
-      + '三指上下拖 = 移动画面，看键盘挡住的部分（手指落在键盘上拖也行）。\n'
+      + '单指上下拖 = 移动画面，看键盘挡住的部分（手指落在键盘上拖也行）；触控板模式下画面会跟着指针自动移动。\n'
       + '点工具条的「复位」还原。'));
     steps.push(tstep('', $r('sys.symbol.keyboard'), '键盘上有什么',
       '「?123」切数字符号层；右侧是 Esc、方向键、Home/End、PgUp/PgDn。\n'
@@ -1173,7 +1198,7 @@ export struct SessionPage {
     .position({ right: 12, top: 30 })
   }
 
-  /** 键盘第一次挡住画面时，告诉用户可以三指把画面推上来——这个手势没有任何视觉线索，
+  /** 键盘第一次挡住画面时，告诉用户可以单指把画面推上来——这个手势没有任何视觉线索，
    *  不说没人会去试。看过一次就记住，不再打扰 */
   private maybeShowPanTip(): void {
     if (this.showPanTip || this.isPc || this.tourStep >= 0) {
@@ -1207,7 +1232,11 @@ export struct SessionPage {
         .fontSize(16)
         .fontColor(Color.White)
         .fontWeight(FontWeight.Medium)
-      Text('用三根手指在屏幕上下拖动，把远端画面移上来看被挡住的部分。\n收起键盘后自动归位，也可以点工具条的「复位」。')
+      Text(this.trackpadMode
+        ? '画面会跟着指针自动上移；也可以在键盘上用单指上下拖动，把远端画面移上来看被挡住的部分。'
+          + '\n收起键盘后自动归位，也可以点工具条的「复位」。'
+        : '用单指在屏幕上下拖动，把远端画面移上来看被挡住的部分（键盘弹出期间单指拖动不再拖拽远端内容）。'
+          + '\n收起键盘后自动归位，也可以点工具条的「复位」。')
         .fontSize(13)
         .fontColor('#CCFFFFFF')
         .textAlign(TextAlign.Center)
@@ -1252,21 +1281,77 @@ export struct SessionPage {
     }
   }
 
-  /** 键盘/导航面板上的三指竖拖：它们盖着画面，手指落在上面也得能把画面推上去。
-   *  触摸本来就不会传给 XComponent，所以不必动 setGestureActive */
-  private onPanelPan(phase: number, dy: number): void {
+  /** 单指竖拖上推画面，像 Windows App 那样：键盘挡住了下半截，手指往上一拖就能看到。
+   *  两个来源共用：键盘/导航面板上的 PanGesture（dy 为 vp），以及画面上由原生识别的
+   *  单指拖动（onScreenPan 换算成 vp 后转进来）。面板的触摸不会传给 XComponent，
+   *  画面上的那段原生侧已不再发鼠标，所以都不必动 setGestureActive */
+  private onKbPan(phase: number, dy: number): void {
     if (phase === PAN_START) {
-      if (this.panLimit() <= 0 || this.kbPanFingers !== 0) {
+      if (this.panLimit() <= 0 || this.kbPanning) {
         return;
       }
-      this.kbPanFingers = KB_PAN_FINGERS;
+      this.kbPanning = true;
       this.baseKbShift = this.kbShift;
     } else if (phase === PAN_UPDATE) {
-      if (this.kbPanFingers === KB_PAN_FINGERS) {
-        this.kbShift = Math.min(this.panLimit(), Math.max(0, this.baseKbShift - dy));
+      if (!this.kbPanning) {
+        return;
       }
-    } else if (this.kbPanFingers === KB_PAN_FINGERS) {
-      this.kbPanFingers = 0;
+    } else {
+      this.kbPanning = false;
+      return;
+    }
+    // 手指上滑（dy<0）→ 画面上推；范围 [0, 键盘区高度]
+    this.kbShift = Math.min(this.panLimit(), Math.max(0, this.baseKbShift - dy));
+  }
+
+  /** 原生回调：画面上的单指拖动（直接触摸模式、键盘弹出时）。dyPx 是屏幕像素 */
+  private onScreenPan(phase: number, dyPx: number): void {
+    const dy = dyPx / this.density;
+    if (phase === VIEW_PAN_START) {
+      this.onKbPan(PAN_START, 0);
+      this.onKbPan(PAN_UPDATE, dy);
+    } else if (phase === VIEW_PAN_UPDATE) {
+      this.onKbPan(PAN_UPDATE, dy);
+    } else {
+      this.onKbPan(PAN_END, 0);
+    }
+  }
+
+  /** 告诉原生此刻单指拖动该不该改成上推画面：键盘挡着画面、且是直接触摸模式。
+   *  触控板模式单指要移指针，改由 followCursor 让画面跟着指针走 */
+  private syncViewPan(): void {
+    const want = this.panLimit() > 0 && !this.trackpadMode ? 1 : 0;
+    if (want === this.viewPanSent) {
+      return;
+    }
+    this.viewPanSent = want;
+    try {
+      hmrdp.setViewPan(want === 1);
+    } catch (e) {
+      this.viewPanSent = -1;
+    }
+  }
+
+  /** 触控板模式 + 键盘弹出：指针被移到键盘后面时把画面推上去，移回上方时再放下来。
+   *  只在指针真的动了才跟，用户在键盘面板上手动推过的画面不会被拽回去 */
+  private followCursor(fy: number): void {
+    if (fy < 0 || !this.trackpadMode || this.kbPanning) {
+      this.lastCursorFy = fy;
+      return;
+    }
+    const limit = this.panLimit();
+    if (limit <= 0 || fy === this.lastCursorFy) {
+      this.lastCursorFy = fy;
+      return;
+    }
+    this.lastCursorFy = fy;
+    const cy = this.viewH / 2;
+    const py = cy + (fy * this.viewH - cy) * this.viewScale + this.offsetY - this.kbShift;
+    const bottom = this.viewH - limit - FOLLOW_MARGIN;
+    if (py > bottom) {
+      this.kbShift = Math.min(limit, this.kbShift + (py - bottom));
+    } else if (py < FOLLOW_MARGIN && this.kbShift > 0) {
+      this.kbShift = Math.max(0, this.kbShift - (FOLLOW_MARGIN - py));
     }
   }
 
@@ -1351,51 +1436,14 @@ export struct SessionPage {
     }
   }
 
-  /** 键盘弹出期间是否由本手势上推画面：一律三指竖向拖。
-   *  不用单指——单指在触控板模式是移指针、在直接触摸模式是点击/拖拽，两种模式的核心操作都被占；
-   *  而且常驻一个单指竖向 PanGesture 会打乱原生 XComponent 的触摸投递（触控板指针上下走发跳）。
-   *  也不用双指——双指是远端滚轮，打字时要翻上下文正需要它，被上推画面占掉就没法滚了。 */
-  private kbPanAllowed(fingers: number): boolean {
-    if (this.panLimit() <= 0 || this.isPc) {
-      return false;
-    }
-    return fingers === KB_PAN_FINGERS;
-  }
-
-  /** fingers = 该 PanGesture 声明的指数；event 用来核对实际落下的指数 */
-  private kbPanStart(fingers: number, event: GestureEvent): boolean {
-    if (this.kbPanFingers !== 0 || event.fingerList.length !== fingers || !this.kbPanAllowed(fingers)) {
-      return false;
-    }
-    this.kbPanFingers = fingers;
-    this.baseKbShift = this.kbShift;
-    hmrdp.setGestureActive(true); // 这段触摸不再转成远端鼠标事件
-    return true;
-  }
-
-  private kbPanUpdate(fingers: number, dy: number): void {
-    if (this.kbPanFingers !== fingers) {
-      return;
-    }
-    // 手指上滑（dy<0）→ 画面上推；范围 [0, 键盘+功能键条高度]
-    this.kbShift = Math.min(this.panLimit(), Math.max(0, this.baseKbShift - dy));
-  }
+  /** 画面上的单指上推不走 ArkUI 手势：常驻一个单指 PanGesture 会打乱原生 XComponent 的
+   *  触摸投递（触控板指针上下走发跳），所以由原生 TouchMapper 识别后回调（见 syncViewPan） */
 
   private endZoomPan(): void {
     if (!this.zoomPanning) {
       return;
     }
     this.zoomPanning = false;
-    if (this.kbPanFingers === 0) { // 三指上推还在进行的话，setGestureActive 由它收尾
-      hmrdp.setGestureActive(false);
-    }
-  }
-
-  private kbPanEnd(fingers: number): void {
-    if (this.kbPanFingers !== fingers) {
-      return;
-    }
-    this.kbPanFingers = 0;
     hmrdp.setGestureActive(false);
   }
 
@@ -1725,22 +1773,12 @@ export struct SessionPage {
                   }
                   hmrdp.setGestureActive(false);
                 }),
-              // 三指拖动：键盘弹出时上推画面
-              PanGesture({ fingers: KB_PAN_FINGERS })
-                .onActionStart((event: GestureEvent) => {
-                  this.kbPanStart(KB_PAN_FINGERS, event);
-                })
-                .onActionUpdate((event: GestureEvent) => {
-                  this.kbPanUpdate(KB_PAN_FINGERS, event.offsetY as number);
-                })
-                .onActionEnd(() => { this.kbPanEnd(KB_PAN_FINGERS); })
-                .onActionCancel(() => { this.kbPanEnd(KB_PAN_FINGERS); }),
               // 双指拖动：缩放后平移画面。没放大时不接管触摸，否则原生的双指滚轮会被这里吃掉。
-              // fingers 是「至少几指」，三指上推画面时它也会触发，那时让给上面那个手势
+              // （键盘弹出时的单指上推画面由原生识别，见 syncViewPan）
               PanGesture({ fingers: 2 })
                 .onActionStart((event: GestureEvent) => {
                   this.zoomPanning = false;
-                  if (this.kbPanFingers !== 0 || event.fingerList.length !== 2) {
+                  if (this.kbPanning) {
                     return;
                   }
                   if (this.viewScale > 1) {
@@ -1751,7 +1789,7 @@ export struct SessionPage {
                   }
                 })
                 .onActionUpdate((event: GestureEvent) => {
-                  if (this.zoomPanning && this.kbPanFingers === 0) {
+                  if (this.zoomPanning) {
                     this.offsetX = this.baseOffsetX + (event.offsetX as number);
                     this.offsetY = this.baseOffsetY + (event.offsetY as number);
                     this.clampOffsets();
@@ -1809,7 +1847,7 @@ export struct SessionPage {
                 this.sendWithMods(code, ext, needShift);
               },
               onAction: (act: number) => { this.onSoftAction(act); },
-              onPan: (phase: number, dy: number) => { this.onPanelPan(phase, dy); }
+              onPan: (phase: number, dy: number) => { this.onKbPan(phase, dy); }
             })
           }
           .width('100%')
@@ -1825,7 +1863,7 @@ export struct SessionPage {
                 this.sendWithMods(code, ext, needShift);
               },
               onAction: (act: number) => { this.onSoftAction(act); },
-              onPan: (phase: number, dy: number) => { this.onPanelPan(phase, dy); }
+              onPan: (phase: number, dy: number) => { this.onKbPan(phase, dy); }
             })
           }
           .width('100%')

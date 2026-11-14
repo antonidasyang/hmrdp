@@ -68,9 +68,17 @@ export interface TouchHold {
   /** 按下点（surface 像素） */
   x: number;
   y: number;
+  /** 触控板模式下虚拟指针的纵向位置（占远端桌面高度的比例 0~1）；直接触摸模式或未知时为 -1 */
+  cursorFy: number;
 }
 
 export const getTouchHold: () => TouchHold;
+
+/** 键盘弹出时（直接触摸模式）单指拖动改为上推画面：不再落左键拖拽，轻点/长按照旧 */
+export const setViewPan: (on: boolean) => void;
+/** 单指上推画面的进度回调。phase 0=开始 1=进行中 2=结束；dyPx = 手指相对按下点的屏幕纵向位移（px）。
+ *  会话断开后自动摘掉，重连需重新设置；不传 = 摘掉 */
+export const setViewPanCallback: (cb?: (phase: number, dyPx: number) => void) => void;
 
 /** 长按计时满：在当前位置发一次右键（坐标为 surface 像素；触控板模式下忽略坐标，
  *  右键落在虚拟指针处）。发完本次触摸序列作废，抬起时不再补左键单击。 */
