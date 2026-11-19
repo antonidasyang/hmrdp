@@ -68,7 +68,8 @@ export interface TouchHold {
   /** 按下点（surface 像素） */
   x: number;
   y: number;
-  /** 触控板模式下虚拟指针的纵向位置（占远端桌面高度的比例 0~1）；直接触摸模式或未知时为 -1 */
+  /** 远端指针位置（占远端桌面宽/高的比例 0~1）；未连接或未知时为 -1 */
+  cursorFx: number;
   cursorFy: number;
 }
 

@@ -797,14 +797,15 @@ napi_value SetTouchMode(napi_env env, napi_callback_info info)
     return undefined;
 }
 
-// getTouchHold() -> { ms, x, y } — 当前单指按住且未明显漂移的毫秒数（ms<0 表示没有），
-// 以及按下点的 surface 像素坐标。ArkTS 轮询它来画长按进度圈：XComponent 挂了 native
+// getTouchHold() -> { ms, x, y, cursorFx, cursorFy } — 当前单指按住且未明显漂移的毫秒数（ms<0 表示没有），
+// 按下点的 surface 像素坐标，以及远端指针位置（占桌面宽高的比例）。ArkTS 轮询它来画长按进度圈：XComponent 挂了 native
 // 渲染之后，ArkUI 侧的 onTouch 收不到触摸事件，只有原生这条回调是通的
 napi_value GetTouchHold(napi_env env, napi_callback_info info)
 {
     double ms = -1;
     double hx = 0;
     double hy = 0;
+    double cursorFx = -1;
     double cursorFy = -1;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -814,18 +815,20 @@ napi_value GetTouchHold(napi_env env, napi_callback_info info)
         float x = 0;
         float y = 0;
         const int64_t ns = g_touchEnabled.load() ? g_touchMapper.HoldDurationNs(x, y) : -1;
-        // 触控板模式下画面要跟着指针上推，ArkTS 需要知道指针在哪（按桌面高度的比例给，
-        // 画面是整幅拉伸到 XComponent 上的，乘上组件高度就是组件内纵坐标）
+        // 远端指针位置：触控板模式画面要跟着指针上推，长按进度圈也画在指针处。
+        // 按桌面宽高的比例给——画面是整幅拉伸到 XComponent 上的，乘上组件宽高就是组件内坐标
         RdpSession* session = CurrentSession();
-        if (session && g_touchMapper.IsTrackpad()) {
+        if (session) {
             uint32_t dw = 0;
             uint32_t dh = 0;
             uint32_t cx = 0;
             uint32_t cy = 0;
             session->GetDesktopSize(dw, dh);
             session->GetCursorPos(cx, cy);
-            if (dh > 0)
+            if (dw > 0 && dh > 0) {
+                cursorFx = static_cast<double>(cx) / static_cast<double>(dw);
                 cursorFy = static_cast<double>(cy) / static_cast<double>(dh);
+            }
         }
         if (ns >= 0) {
             ms = static_cast<double>(ns) / 1000000.0;
@@ -842,6 +845,8 @@ napi_value GetTouchHold(napi_env env, napi_callback_info info)
     napi_set_named_property(env, obj, "x", v);
     napi_create_double(env, hy, &v);
     napi_set_named_property(env, obj, "y", v);
+    napi_create_double(env, cursorFx, &v);
+    napi_set_named_property(env, obj, "cursorFx", v);
     napi_create_double(env, cursorFy, &v);
     napi_set_named_property(env, obj, "cursorFy", v);
     return obj;

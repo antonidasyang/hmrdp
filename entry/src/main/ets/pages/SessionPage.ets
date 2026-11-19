@@ -21,7 +21,8 @@ interface HmTouchHold {
   ms: number;
   x: number;
   y: number;
-  /** 触控板虚拟指针纵向位置（远端桌面高度的比例）；-1 = 不可用 */
+  /** 远端指针位置（远端桌面宽/高的比例）；-1 = 不可用 */
+  cursorFx: number;
   cursorFy: number;
 }
 
@@ -231,7 +232,7 @@ export struct SessionPage {
   @State imeBarFolded: boolean = false;
   /** 首次弹出键盘时的操作引导（单指拖动画面），看过一次就不再出现 */
   @State showPanTip: boolean = false;
-  // 长按出右键：进度圈画在手指处（窗口坐标），计时满了由原生按当前模式决定右键落点
+  // 长按出右键：进度圈画在右键落点（触控板=远端指针，直接触摸=手指），计时满了由原生按当前模式决定右键落点
   @State pressing: boolean = false;
   @State pressPct: number = 0;
   @State pressCx: number = 0;
@@ -961,8 +962,12 @@ export struct SessionPage {
     if (hold.ms < HOLD_SHOW_MS) {
       return; // 还够不上长按，别让普通点击闪圈
     }
-    const lx = hold.x / this.density;
-    const ly = hold.y / this.density;
+    // 圈画在右键的落点：触控板模式跟着远端指针走（手指在别处，右键落在指针上）；
+    // 直接触摸模式按下时指针还没挪过来，右键落在手指处，圈也画在手指处。
+    // 指针位置取不到时退回按下点
+    const onCursor = this.trackpadMode && hold.cursorFx >= 0 && hold.cursorFy >= 0;
+    const lx = onCursor ? hold.cursorFx * this.viewW : hold.x / this.density;
+    const ly = onCursor ? hold.cursorFy * this.viewH : hold.y / this.density;
     const cx = this.viewW / 2;
     const cy = this.viewH / 2;
     this.pressCx = cx + (lx - cx) * this.viewScale + this.offsetX;
@@ -982,8 +987,12 @@ export struct SessionPage {
     }
   }
 
-  /** 指示圈的纵向位置：默认落在手指上方，贴近屏幕顶部时改画到下方 */
+  /** 指示圈的纵向位置：触控板模式手指不在指针处，圈直接套在指针上；
+   *  直接触摸模式指针就在手指底下，套上去会被挡住，挪到上方，贴近顶部时改画到下方 */
   private ringY(): number {
+    if (this.trackpadMode) {
+      return this.pressCy - RING_D / 2;
+    }
     const above = this.pressCy - RING_D - 34;
     return above > 6 ? above : this.pressCy + 34;
   }
@@ -1758,16 +1767,25 @@ export struct SessionPage {
             GestureGroup(GestureMode.Parallel,
               PinchGesture({ fingers: 2 })
                 .onActionStart(() => {
+                  if (this.isPc) {
+                    return; // PC/2in1 不要双指放大：触屏上双指交给原生（滚轮）
+                  }
                   hmrdp.setGestureActive(true);
                   this.baseScale = this.viewScale;
                   this.baseOffsetX = this.offsetX;
                   this.baseOffsetY = this.offsetY;
                 })
                 .onActionUpdate((event: GestureEvent) => {
+                  if (this.isPc) {
+                    return;
+                  }
                   this.viewScale = Math.min(4, Math.max(1, this.baseScale * event.scale));
                   this.clampOffsets();
                 })
                 .onActionEnd(() => {
+                  if (this.isPc) {
+                    return;
+                  }
                   if (this.viewScale <= 1.01) {
                     this.resetZoom();
                   }
