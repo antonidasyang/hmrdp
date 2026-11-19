@@ -35,7 +35,13 @@ napi_threadsafe_function g_certTsfn = nullptr;
 napi_threadsafe_function g_clipTsfn = nullptr;
 napi_threadsafe_function g_clipImageTsfn = nullptr;
 std::atomic<bool> g_keyIntercepting{ false };  // 物理键盘拦截是否生效（受限权限）
-std::atomic<bool> g_touchEnabled{ true };     // 触摸→鼠标映射开关（PC 上关掉以避双击）
+std::atomic<bool> g_touchEnabled{ true };     // 触摸→鼠标映射开关
+// PC/2in1：触摸回调里也会收到物理鼠标/触控板的事件（和鼠标回调重复，表现为双击），
+// 打开后只认触摸屏来源，其余丢给鼠标回调处理
+std::atomic<bool> g_touchScreenOnly{ false };
+// 触摸屏上有手指按着：这期间鼠标回调来的事件丢掉，防系统把触摸再合成一份鼠标事件
+std::atomic<bool> g_touchScreenDown{ false };
+std::atomic<int> g_touchSrcLogged{ 0 };
 
 // ---- 返回鸿蒙桌面热键（本地消费，不转发远端；命中即回调 ArkTS 最小化窗口）----
 // PC 全屏会话既没有标题栏悬浮也没有 Dock 悬浮，且键盘拦截器会吞掉鸿蒙自身的系统快捷键，
@@ -492,10 +498,32 @@ bool ConsumeDesktopHotkey(int32_t code, bool down)
 void DispatchTouchEvent(OH_NativeXComponent* component, void* window)
 {
     if (!g_touchEnabled.load())
-        return; // PC/2in1 有物理键鼠，触摸由 ArkTS 手势处理，不走 TouchMapper 避免双击
+        return;
     OH_NativeXComponent_TouchEvent event;
     if (OH_NativeXComponent_GetTouchEvent(component, window, &event) != 0)
         return;
+    if (g_touchScreenOnly.load()) {
+        OH_NativeXComponent_EventSourceType src = OH_NATIVEXCOMPONENT_SOURCE_TYPE_UNKNOWN;
+        const int32_t rc = OH_NativeXComponent_GetTouchEventSourceType(component, event.id, &src);
+        if (g_touchSrcLogged.load() < 8 && event.type == OH_NATIVEXCOMPONENT_DOWN) {
+            g_touchSrcLogged.fetch_add(1);
+            HMLOGI("touch(PC) down id=%{public}d src=%{public}d rc=%{public}d", event.id,
+                   static_cast<int>(src), rc);
+        }
+        if (rc != 0 || src != OH_NATIVEXCOMPONENT_SOURCE_TYPE_TOUCHSCREEN)
+            return; // 鼠标/触控板走鼠标回调，这里再处理一遍就成双击了
+        if (event.type == OH_NATIVEXCOMPONENT_DOWN) {
+            g_touchScreenDown.store(true);
+        } else if (event.type == OH_NATIVEXCOMPONENT_UP || event.type == OH_NATIVEXCOMPONENT_CANCEL) {
+            bool anyDown = false;
+            for (uint32_t i = 0; i < event.numPoints && i < OH_MAX_TOUCH_POINTS_NUMBER; ++i) {
+                if (event.touchPoints[i].id != event.id && event.touchPoints[i].isPressed)
+                    anyDown = true;
+            }
+            if (!anyDown || event.type == OH_NATIVEXCOMPONENT_CANCEL)
+                g_touchScreenDown.store(false);
+        }
+    }
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_gestureActive.load())
         g_touchMapper.Cancel(CurrentSession()); // 手势接管：拖拽中的左键要补抬起
@@ -515,6 +543,8 @@ void DispatchMouseEvent(OH_NativeXComponent* component, void* window)
     OH_NativeXComponent_MouseEvent event;
     if (OH_NativeXComponent_GetMouseEvent(component, window, &event) != 0)
         return;
+    if (g_touchScreenOnly.load() && g_touchScreenDown.load())
+        return; // 手指在触摸屏上：这份是触摸合成的鼠标事件，TouchMapper 已经处理过了
     std::lock_guard<std::mutex> lock(g_mutex);
     hmrdp::HandleMouse(event, CurrentSession());
 }
@@ -1117,7 +1147,25 @@ void OnInterceptedKey(const Input_KeyEvent* keyEvent)
 // 不再用 OH_Input_AddInputEventInterceptor：该拦截器一旦注册即全局消费
 // mouse/touch/axis（回调为 null 即静默丢弃），会令鼠标点击与触摸全部失效。
 
-// setTouchEnabled(enable: boolean) — PC 上关闭触摸映射，避免和物理鼠标产生双击
+// setTouchScreenOnly(on: boolean) — PC/2in1：触摸映射只认触摸屏来源，物理鼠标/触控板
+// 交给鼠标回调，避免同一下点击在两条路径各发一次
+napi_value SetTouchScreenOnly(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool on = false;
+    if (argc >= 1)
+        napi_get_value_bool(env, args[0], &on);
+    g_touchScreenOnly.store(on);
+    g_touchScreenDown.store(false);
+    HMLOGI("touch: 仅触摸屏=%{public}d", on ? 1 : 0);
+    napi_value undefined = nullptr;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// setTouchEnabled(enable: boolean) — 开/关触摸→鼠标映射
 napi_value SetTouchEnabled(napi_env env, napi_callback_info info)
 {
     size_t argc = 1;
@@ -1280,6 +1328,7 @@ napi_value Init(napi_env env, napi_value exports)
         { "setKeyInterception", nullptr, SetKeyInterception, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setDesktopHotkey", nullptr, SetDesktopHotkey, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setTouchEnabled", nullptr, SetTouchEnabled, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setTouchScreenOnly", nullptr, SetTouchScreenOnly, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sendWheel", nullptr, SendWheel, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

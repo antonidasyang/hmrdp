@@ -49,8 +49,10 @@ export const setKeyInterception: (enable: boolean) => boolean;
  *  命中的按键被本地消费、不转发远端，并回调 onTrigger（用于最小化回桌面）。
  *  mods 或 keyCode 传 0 = 关闭。 */
 export const setDesktopHotkey: (mods: number, keyCode: number, onTrigger?: () => void) => void;
-/** 开/关触摸→鼠标映射（PC 上关掉避免和物理鼠标产生双击） */
+/** 开/关触摸→鼠标映射 */
 export const setTouchEnabled: (enable: boolean) => void;
+/** PC/2in1：触摸映射只认触摸屏来源（物理鼠标/触控板走鼠标回调，避免双击） */
+export const setTouchScreenOnly: (on: boolean) => void;
 /** 鼠标滚轮（delta 正值向上，单位为标准滚轮档） */
 export const sendWheel: (delta: number, x: number, y: number) => void;
 /** 应答证书确认：0=拒绝 1=永久接受 2=仅本次接受 */

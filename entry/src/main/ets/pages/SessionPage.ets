@@ -333,7 +333,8 @@ export struct SessionPage {
     } catch (e) {
     }
     if (this.isPc) {
-      hmrdp.setTouchEnabled(false); // PC 有物理键鼠，关掉 TouchMapper 避免和鼠标回调产生双击
+      // 触摸回调里也会混进物理鼠标/触控板事件，只认触摸屏来源，避免和鼠标回调重复成双击
+      hmrdp.setTouchScreenOnly(true);
       this.refreshDisplays();
       try {
         display.on('add', this.displayChangeCb); // 外接屏插拔时刷新「屏幕」菜单
@@ -895,10 +896,7 @@ export struct SessionPage {
    *  也不用 LongPressGesture：手势识别器会改变事件分发，之前常驻 PanGesture 就把原生的
    *  触摸投递打乱过（触控板指针发跳）。轮询完全不碰事件链路，最稳。 */
   private startHoldPoll(): void {
-    this.stopHoldPoll();
-    if (this.isPc) {
-      return; // PC 有物理鼠标右键
-    }
+    this.stopHoldPoll(); // PC 的触摸屏同样靠长按出右键
     this.viewPanSent = -1; // 断线重连后原生侧已复位，重新下发
     this.lastCursorFy = -1;
     try {
@@ -1599,8 +1597,8 @@ export struct SessionPage {
       this.setupClipboard();
       if (!this.isPc) {
         this.setupKeyboardWatch(); // 软键盘高度：上推画面的范围 + 工具条抬升
-        this.startHoldPoll();      // 长按出右键
       }
+      this.startHoldPoll(); // 长按出右键（PC 的触摸屏也要）
       // 首次连接：等画面先出来，再开始讲工具条
       setTimeout(() => {
         if (this.connected && !this.closing) {
