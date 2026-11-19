@@ -19,6 +19,10 @@
     {
       "name": "perm_intercept_reason",
       "value": "用于把物理键盘的全部按键（含 Win 等系统组合键）转发给远程电脑"
+    },
+    {
+      "name": "perm_background_reason",
+      "value": "用于切换到其他应用时保持与远程电脑的连接不断开"
     }
   ]
 }

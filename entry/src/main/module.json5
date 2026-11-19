@@ -21,6 +21,17 @@
         "name": "ohos.permission.GET_NETWORK_INFO"
       },
       {
+        // PC/2in1 会话切到后台时申请长时任务（taskKeeping），防止进程被冻结、连接断开
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING",
+        "reason": "$string:perm_background_reason",
+        "usedScene": {
+          "abilities": [
+            "SessionAbility"
+          ],
+          "when": "always"
+        }
+      },
+      {
         "name": "ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY",
         "reason": "$string:perm_files_reason",
         "usedScene": {
@@ -86,6 +97,10 @@
         // 进程（native 全局会话互不干扰），进程名由 onNewProcessRequest 决定，仅 2in1 生效。
         "launchType": "specified",
         "isolationProcess": true,
+        // PC/2in1 切到别的程序时保持连接：taskKeeping 长时任务仅 2in1 可用
+        "backgroundModes": [
+          "taskKeeping"
+        ],
         // floating 必须允许：跨显示器移动要先 recover 回浮动态再 move+maximize
         "supportWindowMode": [
           "fullscreen",

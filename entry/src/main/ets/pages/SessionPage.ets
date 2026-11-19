@@ -1,6 +1,7 @@
 import { display, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
-import { common } from '@kit.AbilityKit';
+import { common, Want, wantAgent } from '@kit.AbilityKit';
+import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { resolveSharePath, SHARE_TARGETS } from '../model/ShareFolders';
@@ -293,6 +294,9 @@ export struct SessionPage {
    *  拦截生效 = 事件不再下发，只有原生 OnInterceptedKey 能拿到；
    *  拦截未生效 = 事件正常下发，inputConsumer 的组合键订阅才会触发。 */
   private keyIntercepting: boolean = false;
+  /** PC 上的后台长时任务（TASK_KEEPING）是否已申请；切到别的程序时靠它免于被冻结断线 */
+  private keepAlive: boolean = false;
+  private keepAliveCtx: common.UIAbilityContext | undefined = undefined;
   /** 应答主窗口的「还有会话在跑吗」探测：主窗口关闭前据此弹确认框 */
   private aliveResponder: SessionAliveResponder = new SessionAliveResponder();
   // 「返回鸿蒙桌面」热键：已向系统注册的组合（inputConsumer），用于 off 时精确注销
@@ -1607,12 +1611,14 @@ export struct SessionPage {
       }, 900);
       // 让主窗口能探测到这个会话：关闭主窗口前会据此提示「会断开全部连接」
       this.aliveResponder.start(this.params.host);
+      this.startKeepAlive();
       if (this.isPc) {
         // 抢占物理键盘全键盘直通（含 Win 键）；拿到拦截态后内部再武装返回桌面热键
         this.setupKeyInterception();
       }
     } else if (state === STATE_DISCONNECTED) {
       this.connected = false;
+      this.stopKeepAlive();
       if (this.closing) {
         return;
       }
@@ -1623,6 +1629,53 @@ export struct SessionPage {
         this.errorText = friendlyError(message); // 显示错误面板，可重试
       }
     }
+  }
+
+  /** PC/2in1：会话窗口切到后台几秒后系统会冻结进程、停掉网络，回来时远端早已断开。
+   *  连上后申请「计算任务」长时任务（taskKeeping，2in1 专属），断开时释放 */
+  private async startKeepAlive(): Promise<void> {
+    if (!this.isPc || this.keepAlive) {
+      return;
+    }
+    this.keepAlive = true; // 先占位，免得重连回调并发时申请两次
+    try {
+      const ctx = this.ctx() as common.UIAbilityContext;
+      this.keepAliveCtx = ctx;
+      // 点长时任务通知时回到这个会话窗口：SessionAbility 按 host:port 路由到已有实例
+      const want: Want = this.params.standalone
+        ? { bundleName: ctx.abilityInfo.bundleName, abilityName: 'SessionAbility',
+          parameters: { host: this.params.host, port: this.params.port } }
+        : { bundleName: ctx.abilityInfo.bundleName, abilityName: 'EntryAbility' };
+      const info: wantAgent.WantAgentInfo = {
+        wants: [want],
+        actionType: wantAgent.OperationType.START_ABILITY,
+        requestCode: 0,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      };
+      const agent = await wantAgent.getWantAgent(info);
+      await backgroundTaskManager.startBackgroundRunning(ctx,
+        backgroundTaskManager.BackgroundMode.TASK_KEEPING, agent);
+      console.info('HMRDP 后台长时任务已申请（taskKeeping）');
+      if (!this.connected || this.closing) {
+        this.stopKeepAlive(); // 申请途中已断开
+      }
+    } catch (e) {
+      this.keepAlive = false;
+      const err = e as BusinessError;
+      console.error(`HMRDP 后台长时任务申请失败: code=${err.code} ${err.message}`);
+    }
+  }
+
+  private stopKeepAlive(): void {
+    if (!this.keepAlive || this.keepAliveCtx === undefined) {
+      return;
+    }
+    this.keepAlive = false;
+    backgroundTaskManager.stopBackgroundRunning(this.keepAliveCtx).then(() => {
+      console.info('HMRDP 后台长时任务已释放');
+    }).catch((e: BusinessError) => {
+      console.error(`HMRDP 后台长时任务释放失败: code=${e.code} ${e.message}`);
+    });
   }
 
   private leave(message: string): void {
@@ -2006,6 +2059,7 @@ export struct SessionPage {
       this.softKb = false;
       this.stopHoldPoll();
       this.aliveResponder.stop();
+      this.stopKeepAlive();
       this.teardownClipboard();
       this.teardownKeyInterception();
       this.teardownKeyboardWatch();
